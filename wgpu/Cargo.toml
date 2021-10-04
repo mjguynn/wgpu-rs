@@ -118,6 +118,10 @@ name="cube"
 test = true
 
 [[example]]
+name="cube2"
+test = true
+
+[[example]]
 name="hello-compute"
 test = true
 
