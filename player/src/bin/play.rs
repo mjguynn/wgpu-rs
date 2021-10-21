@@ -55,6 +55,7 @@ fn main() {
                 .request_adapter(
                     &wgc::instance::RequestAdapterOptions {
                         power_preference: wgt::PowerPreference::LowPower,
+                        force_fallback_adapter: false,
                         #[cfg(feature = "winit")]
                         compatible_surface: Some(surface),
                         #[cfg(not(feature = "winit"))]
@@ -136,6 +137,11 @@ fn main() {
                             frame_count += 1;
                             log::debug!("Presenting frame {}", frame_count);
                             gfx_select!(device => global.surface_present(id)).unwrap();
+                            break;
+                        }
+                        Some(trace::Action::DiscardSurfaceTexture(id)) => {
+                            log::debug!("Discarding frame {}", frame_count);
+                            gfx_select!(device => global.surface_texture_discard(id)).unwrap();
                             break;
                         }
                         Some(action) => {

@@ -145,6 +145,7 @@ impl Test<'_> {
                     .collect::<Vec<u8>>(),
             };
 
+            #[allow(unknown_lints, clippy::if_then_panic)]
             if &expected_data[..] != contents {
                 panic!(
                     "Test expectation is not met!\nBuffer content was:\n{:?}\nbut expected:\n{:?}",
@@ -185,6 +186,7 @@ impl Corpus {
             let adapter = match global.request_adapter(
                 &wgc::instance::RequestAdapterOptions {
                     power_preference: wgt::PowerPreference::LowPower,
+                    force_fallback_adapter: false,
                     compatible_surface: None,
                 },
                 wgc::instance::AdapterInputs::IdSet(

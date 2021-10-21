@@ -58,6 +58,8 @@ To address this, we invalidate the vertex buffers based on:
 
 #[cfg(not(target_arch = "wasm32"))]
 mod egl;
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 mod adapter;
 mod command;
@@ -67,6 +69,9 @@ mod queue;
 
 #[cfg(not(target_arch = "wasm32"))]
 use self::egl::{AdapterContext, Instance, Surface};
+
+#[cfg(target_arch = "wasm32")]
+use self::web::{AdapterContext, Instance, Surface};
 
 use arrayvec::ArrayVec;
 
@@ -114,14 +119,21 @@ bitflags::bitflags! {
     /// Flags that affect internal code paths but do not
     /// change the exposed feature set.
     struct PrivateCapabilities: u32 {
+        /// Indicates support for `glBufferStorage` allocation.
+        const BUFFER_ALLOCATION = 1 << 0;
         /// Support explicit layouts in shader.
-        const SHADER_BINDING_LAYOUT = 1 << 0;
+        const SHADER_BINDING_LAYOUT = 1 << 1;
         /// Support extended shadow sampling instructions.
-        const SHADER_TEXTURE_SHADOW_LOD = 1 << 1;
+        const SHADER_TEXTURE_SHADOW_LOD = 1 << 2;
         /// Support memory barriers.
-        const MEMORY_BARRIERS = 1 << 2;
+        const MEMORY_BARRIERS = 1 << 3;
         /// Vertex buffer layouts separate from the data.
-        const VERTEX_BUFFER_LAYOUT = 1 << 3;
+        const VERTEX_BUFFER_LAYOUT = 1 << 4;
+        /// Indicates that buffers used as `GL_ELEMENT_ARRAY_BUFFER` may be created / initialized / used
+        /// as other targets, if not present they must not be mixed with other targets.
+        const INDEX_BUFFER_ROLE_CHANGE = 1 << 5;
+        /// Indicates that the device supports disabling draw buffers
+        const CAN_DISABLE_DRAW_BUFFER = 1 << 6;
     }
 }
 
@@ -135,6 +147,8 @@ bitflags::bitflags! {
         // (https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/4972/diffs?diff_id=75888#22f5d1004713c9bbf857988c7efb81631ab88f99_323_327)
         // seems to indicate all skylake models are effected.
         const MESA_I915_SRGB_SHADER_CLEAR = 1 << 0;
+        /// Buffer map must emulated becuase it is not supported natively
+        const EMULATE_BUFFER_MAP = 1 << 1;
     }
 }
 
@@ -193,6 +207,7 @@ pub struct Queue {
     zero_buffer: glow::Buffer,
     temp_query_results: Vec<u64>,
     draw_buffer_count: u8,
+    current_index_buffer: Option<glow::Buffer>,
 }
 
 #[derive(Debug)]
@@ -201,7 +216,14 @@ pub struct Buffer {
     target: BindTarget,
     size: wgt::BufferAddress,
     map_flags: u32,
+    emulate_map_allocation: std::sync::Mutex<Option<Vec<u8>>>,
 }
+
+// Safe: WASM doesn't have threads
+#[cfg(target_arch = "wasm32")]
+unsafe impl Sync for Buffer {}
+#[cfg(target_arch = "wasm32")]
+unsafe impl Send for Buffer {}
 
 #[derive(Clone, Debug)]
 enum TextureInner {
@@ -217,7 +239,9 @@ enum TextureInner {
 impl TextureInner {
     fn as_native(&self) -> (glow::Texture, BindTarget) {
         match *self {
-            Self::Renderbuffer { raw, .. } => panic!("Unexpected renderbuffer {:?}", raw),
+            Self::Renderbuffer { .. } => {
+                panic!("Unexpected renderbuffer");
+            }
             Self::Texture { raw, target } => (raw, target),
         }
     }
@@ -400,9 +424,21 @@ pub struct RenderPipeline {
     stencil: Option<StencilState>,
 }
 
+// SAFE: WASM doesn't have threads
+#[cfg(target_arch = "wasm32")]
+unsafe impl Send for RenderPipeline {}
+#[cfg(target_arch = "wasm32")]
+unsafe impl Sync for RenderPipeline {}
+
 pub struct ComputePipeline {
     inner: PipelineInner,
 }
+
+// SAFE: WASM doesn't have threads
+#[cfg(target_arch = "wasm32")]
+unsafe impl Send for ComputePipeline {}
+#[cfg(target_arch = "wasm32")]
+unsafe impl Sync for ComputePipeline {}
 
 #[derive(Debug)]
 pub struct QuerySet {
@@ -534,12 +570,6 @@ enum Command {
         dst: glow::Buffer,
         dst_target: BindTarget,
         range: crate::MemoryRange,
-    },
-    #[allow(unused)] // yet unimplemented
-    ClearTexture {
-        dst: glow::Texture,
-        dst_target: BindTarget,
-        subresource_range: wgt::ImageSubresourceRange,
     },
     CopyBufferToBuffer {
         src: glow::Buffer,

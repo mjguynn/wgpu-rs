@@ -15,6 +15,8 @@
  */
 
 #![allow(
+    // for `if_then_panic` until it reaches stable
+    unknown_lints,
     // We use loops for getting early-out of scope without closures.
     clippy::never_loop,
     // We don't use syntax sugar where it's not necessary.
@@ -29,6 +31,8 @@
     clippy::single_match,
     // Push commands are more regular than macros.
     clippy::vec_init_then_push,
+    // "if panic" is a good uniform construct.
+    clippy::if_then_panic,
     // TODO!
     clippy::missing_safety_doc,
 )]
@@ -49,7 +53,13 @@ compile_error!("DX12 API enabled on non-Windows OS. If your project is not using
 #[cfg(all(feature = "dx12", windows))]
 mod dx12;
 mod empty;
-#[cfg(feature = "gles")]
+#[cfg(all(
+    feature = "gles",
+    any(
+        target_arch = "wasm32",
+        all(unix, not(target_os = "ios"), not(target_os = "macos"))
+    )
+))]
 mod gles;
 #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
 mod metal;
@@ -61,7 +71,13 @@ pub mod api {
     #[cfg(feature = "dx12")]
     pub use super::dx12::Api as Dx12;
     pub use super::empty::Api as Empty;
-    #[cfg(feature = "gles")]
+    #[cfg(all(
+        feature = "gles",
+        any(
+            target_arch = "wasm32",
+            all(unix, not(target_os = "ios"), not(target_os = "macos"))
+        )
+    ))]
     pub use super::gles::Api as Gles;
     #[cfg(feature = "metal")]
     pub use super::metal::Api as Metal;
@@ -188,7 +204,11 @@ pub trait Surface<A: Api>: Send + Sync {
 }
 
 pub trait Adapter<A: Api>: Send + Sync {
-    unsafe fn open(&self, features: wgt::Features) -> Result<OpenDevice<A>, DeviceError>;
+    unsafe fn open(
+        &self,
+        features: wgt::Features,
+        limits: &wgt::Limits,
+    ) -> Result<OpenDevice<A>, DeviceError>;
 
     /// Return the set of supported capabilities for a texture format.
     unsafe fn texture_format_capabilities(
@@ -345,13 +365,6 @@ pub trait CommandEncoder<A: Api>: Send + Sync {
     // copy operations
 
     unsafe fn clear_buffer(&mut self, buffer: &A::Buffer, range: MemoryRange);
-
-    // Does not support depth/stencil or multisampled textures
-    unsafe fn clear_texture(
-        &mut self,
-        texture: &A::Texture,
-        subresource_range: &wgt::ImageSubresourceRange,
-    );
 
     unsafe fn copy_buffer_to_buffer<T>(&mut self, src: &A::Buffer, dst: &A::Buffer, regions: T)
     where
@@ -521,6 +534,14 @@ bitflags!(
         const BASE_VERTEX_INSTANCE = 1 << 0;
         /// Include support for num work groups builtin.
         const NUM_WORK_GROUPS = 1 << 1;
+    }
+);
+
+bitflags!(
+    /// Pipeline layout creation flags.
+    pub struct BindGroupLayoutFlags: u32 {
+        /// Allows for bind group binding arrays to be shorter than the array in the BGL.
+        const PARTIALLY_BOUND = 1 << 0;
     }
 );
 
@@ -798,6 +819,7 @@ pub struct SamplerDescriptor<'a> {
 #[derive(Clone, Debug)]
 pub struct BindGroupLayoutDescriptor<'a> {
     pub label: Label<'a>,
+    pub flags: BindGroupLayoutFlags,
     pub entries: &'a [wgt::BindGroupLayoutEntry],
 }
 
@@ -847,6 +869,7 @@ impl<A: Api> Clone for TextureBinding<'_, A> {
 pub struct BindGroupEntry {
     pub binding: u32,
     pub resource_index: u32,
+    pub count: u32,
 }
 
 /// BindGroup descriptor.
@@ -898,6 +921,7 @@ pub enum ShaderInput<'a> {
 
 pub struct ShaderModuleDescriptor<'a> {
     pub label: Label<'a>,
+    pub runtime_checks: bool,
 }
 
 /// Describes a programmable pipeline stage.

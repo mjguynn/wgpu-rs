@@ -130,6 +130,9 @@ jobs:
         run: |
           cargo clippy --target ${{ matrix.target }} -p wgpu
 
+          # Build for WebGL
+          cargo clippy --target ${{ matrix.target }} -p wgpu --features webgl -- -D warnings
+
           # build docs
           cargo doc --target ${{ matrix.target }} -p wgpu --no-deps
 
@@ -179,3 +182,20 @@ jobs:
       - name: run rustfmt
         run: |
           cargo fmt -- --check
+
+  deno:
+    name: Deno
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v2
+
+      - name: install rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+
+      - name: build Deno
+        run: |
+          cargo check --manifest-path cts_runner/Cargo.toml

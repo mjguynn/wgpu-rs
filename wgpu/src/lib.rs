@@ -234,6 +234,11 @@ trait Context: Debug + Send + Sized + Sync {
         Self::SurfaceOutputDetail,
     );
     fn surface_present(&self, texture: &Self::TextureId, detail: &Self::SurfaceOutputDetail);
+    fn surface_texture_discard(
+        &self,
+        texture: &Self::TextureId,
+        detail: &Self::SurfaceOutputDetail,
+    );
 
     fn device_features(&self, device: &Self::DeviceId) -> Features;
     fn device_limits(&self, device: &Self::DeviceId) -> Limits;
@@ -242,6 +247,7 @@ trait Context: Debug + Send + Sized + Sync {
         &self,
         device: &Self::DeviceId,
         desc: &ShaderModuleDescriptor,
+        shader_bound_checks: wgt::ShaderBoundChecks,
     ) -> Self::ShaderModuleId;
     unsafe fn device_create_shader_module_spirv(
         &self,
@@ -741,6 +747,21 @@ pub enum ShaderSource<'a> {
     /// is passed to `gfx-rs` and `spirv_cross` for translation.
     #[cfg(feature = "spirv")]
     SpirV(Cow<'a, [u32]>),
+    /// GSLS module as a string slice.
+    ///
+    /// wgpu will attempt to parse and validate it. The module will get
+    /// passed to wgpu-core where it will translate it to the required languages.
+    ///
+    /// Note: GLSL is not yet fully supported and must be a direct ShaderStage.
+    #[cfg(feature = "glsl")]
+    Glsl {
+        /// The shaders code
+        shader: Cow<'a, str>,
+        /// Stage in which the GLSL shader is for example: naga::ShaderStage::Vertex
+        stage: naga::ShaderStage,
+        /// Defines to unlock configured shader features
+        defines: naga::FastHashMap<String, String>,
+    },
     /// WGSL module as a string slice.
     ///
     /// wgpu-rs will parse it and use for validation. It will attempt
@@ -877,9 +898,6 @@ impl Drop for CommandBuffer {
 pub struct CommandEncoder {
     context: Arc<C>,
     id: Option<<C as Context>::CommandEncoderId>,
-    /// This type should be !Send !Sync, because it represents an allocation on this thread's
-    /// command buffer.
-    _p: PhantomData<*const u8>,
 }
 
 impl Drop for CommandEncoder {
@@ -1333,24 +1351,19 @@ pub struct RenderBundleEncoderDescriptor<'a> {
 }
 
 /// Surface texture that can be rendered to.
+/// Result of a successful call to [`Surface::get_current_texture`].
 #[derive(Debug)]
 pub struct SurfaceTexture {
     /// Accessible view of the frame.
     pub texture: Texture,
-    detail: <C as Context>::SurfaceOutputDetail,
-}
-
-/// Result of a successful call to [`Surface::get_current_frame`].
-#[derive(Debug)]
-pub struct SurfaceFrame {
-    /// The texture into which the next frame should be rendered.
-    pub output: SurfaceTexture,
     /// `true` if the acquired buffer can still be used for rendering,
     /// but should be recreated for maximum performance.
     pub suboptimal: bool,
+    presented: bool,
+    detail: <C as Context>::SurfaceOutputDetail,
 }
 
-/// Result of an unsuccessful call to [`Surface::get_current_frame`].
+/// Result of an unsuccessful call to [`Surface::get_current_texture`].
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum SurfaceError {
     /// A timeout was encountered while trying to acquire the next frame.
@@ -1485,7 +1498,7 @@ impl Instance {
     /// # Safety
     ///
     /// - canvas must be a valid <canvas> element to create a surface upon.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(feature = "webgl")))]
     pub unsafe fn create_surface_from_canvas(
         &self,
         canvas: &web_sys::HtmlCanvasElement,
@@ -1501,7 +1514,7 @@ impl Instance {
     /// # Safety
     ///
     /// - canvas must be a valid OffscreenCanvas to create a surface upon.
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", not(feature = "webgl")))]
     pub unsafe fn create_surface_from_offscreen_canvas(
         &self,
         canvas: &web_sys::OffscreenCanvas,
@@ -1664,7 +1677,37 @@ impl Device {
     pub fn create_shader_module(&self, desc: &ShaderModuleDescriptor) -> ShaderModule {
         ShaderModule {
             context: Arc::clone(&self.context),
-            id: Context::device_create_shader_module(&*self.context, &self.id, desc),
+            id: Context::device_create_shader_module(
+                &*self.context,
+                &self.id,
+                desc,
+                wgt::ShaderBoundChecks::new(),
+            ),
+        }
+    }
+
+    /// Creates a shader module from either SPIR-V or WGSL source code without runtime checks.
+    ///
+    /// # Safety
+    /// In contrast with [`create_shader_module`](Self::create_shader_module) this function
+    /// creates a shader module without runtime checks which allows shaders to perform
+    /// operations which can lead to undefined behavior like indexing out of bounds, thus it's
+    /// the caller responsibility to pass a shader which doesn't perform any of this
+    /// operations.
+    ///
+    /// This has no effect on web.
+    pub unsafe fn create_shader_module_unchecked(
+        &self,
+        desc: &ShaderModuleDescriptor,
+    ) -> ShaderModule {
+        ShaderModule {
+            context: Arc::clone(&self.context),
+            id: Context::device_create_shader_module(
+                &*self.context,
+                &self.id,
+                desc,
+                wgt::ShaderBoundChecks::unchecked(),
+            ),
         }
     }
 
@@ -1695,7 +1738,6 @@ impl Device {
                 &self.id,
                 desc,
             )),
-            _p: Default::default(),
         }
     }
 
@@ -2844,6 +2886,18 @@ impl<'a> ComputePass<'a> {
     }
 
     /// Dispatches compute work operations, based on the contents of the `indirect_buffer`.
+    ///
+    /// The structure expected in `indirect_buffer` is the following:
+    ///
+    /// ```rust
+    /// // x, y and z denote the number of work groups to dispatch in each dimension.
+    /// #[repr(C)]
+    /// struct DispatchIndirect {
+    ///     x: u32,
+    ///     y: u32,
+    ///     z: u32,
+    /// }
+    /// ```
     pub fn dispatch_indirect(
         &mut self,
         indirect_buffer: &'a Buffer,
@@ -3117,10 +3171,24 @@ impl Queue {
     }
 }
 
+impl SurfaceTexture {
+    /// Schedule this texture to be presented on the owning surface.
+    ///
+    /// Needs to be called after any work on the texture is scheduled via [`Queue::submit`].
+    pub fn present(mut self) {
+        self.presented = true;
+        Context::surface_present(&*self.texture.context, &self.texture.id, &self.detail);
+    }
+}
+
 impl Drop for SurfaceTexture {
     fn drop(&mut self) {
-        if !thread::panicking() {
-            Context::surface_present(&*self.texture.context, &self.texture.id, &self.detail);
+        if !self.presented && !thread::panicking() {
+            Context::surface_texture_discard(
+                &*self.texture.context,
+                &self.texture.id,
+                &self.detail,
+            );
         }
     }
 }
@@ -3137,7 +3205,7 @@ impl Surface {
     ///
     /// # Panics
     ///
-    /// - A old [`SurfaceFrame`] is still alive referencing an old surface.
+    /// - A old [`SurfaceTexture`] is still alive referencing an old surface.
     /// - Texture format requested is unsupported on the surface.
     pub fn configure(&self, device: &Device, config: &SurfaceConfiguration) {
         Context::surface_configure(&*self.context, &self.id, &device.id, config)
@@ -3145,36 +3213,36 @@ impl Surface {
 
     /// Returns the next texture to be presented by the swapchain for drawing.
     ///
-    /// When the [`SurfaceFrame`] returned by this method is dropped, the swapchain will present
-    /// the texture to the associated [`Surface`].
+    /// In order to present the [`SurfaceTexture`] returned by this method,
+    /// first a [`Queue::submit`] needs to be done with some work rendering to this texture.
+    /// Then [`SurfaceTexture::present`] needs to be called.
     ///
-    /// If a SurfaceFrame referencing this surface is alive when the swapchain is recreated,
+    /// If a SurfaceTexture referencing this surface is alive when the swapchain is recreated,
     /// recreating the swapchain will panic.
-    pub fn get_current_frame(&self) -> Result<SurfaceFrame, SurfaceError> {
+    pub fn get_current_texture(&self) -> Result<SurfaceTexture, SurfaceError> {
         let (texture_id, status, detail) =
             Context::surface_get_current_texture(&*self.context, &self.id);
-        let output = texture_id.map(|id| SurfaceTexture {
-            texture: Texture {
-                context: Arc::clone(&self.context),
-                id,
-                owned: false,
-            },
-            detail,
-        });
 
-        match status {
-            SurfaceStatus::Good => Ok(SurfaceFrame {
-                output: output.unwrap(),
-                suboptimal: false,
-            }),
-            SurfaceStatus::Suboptimal => Ok(SurfaceFrame {
-                output: output.unwrap(),
-                suboptimal: true,
-            }),
-            SurfaceStatus::Timeout => Err(SurfaceError::Timeout),
-            SurfaceStatus::Outdated => Err(SurfaceError::Outdated),
-            SurfaceStatus::Lost => Err(SurfaceError::Lost),
-        }
+        let suboptimal = match status {
+            SurfaceStatus::Good => false,
+            SurfaceStatus::Suboptimal => true,
+            SurfaceStatus::Timeout => return Err(SurfaceError::Timeout),
+            SurfaceStatus::Outdated => return Err(SurfaceError::Outdated),
+            SurfaceStatus::Lost => return Err(SurfaceError::Lost),
+        };
+
+        texture_id
+            .map(|id| SurfaceTexture {
+                texture: Texture {
+                    context: Arc::clone(&self.context),
+                    id,
+                    owned: false,
+                },
+                suboptimal,
+                presented: false,
+                detail,
+            })
+            .ok_or(SurfaceError::Lost)
     }
 }
 

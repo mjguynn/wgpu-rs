@@ -2,7 +2,9 @@
 
 # wgpu
 
-[![Matrix](https://img.shields.io/badge/Dev_Matrix-%23wgpu%3Amatrix.org-blueviolet.svg)](https://matrix.to/#/#wgpu:matrix.org) [![Matrix](https://img.shields.io/badge/User_Matrix-%23wgpu--users%3Amatrix.org-blueviolet.svg)](https://matrix.to/#/#wgpu-users:matrix.org)
+[![Matrix Space](https://img.shields.io/static/v1?label=Space&message=%23Wgpu&color=blue&logo=matrix)](https://matrix.to/#/#Wgpu:matrix.org)
+[![Dev Matrix  ](https://img.shields.io/static/v1?label=devs&message=%23wgpu&color=blueviolet&logo=matrix)](https://matrix.to/#/#wgpu:matrix.org)
+[![User Matrix ](https://img.shields.io/static/v1?label=users&message=%23wgpu-users&color=blueviolet&logo=matrix)](https://matrix.to/#/#wgpu-users:matrix.org)
 [![Build Status](https://github.com/gfx-rs/wgpu/workflows/CI/badge.svg)](https://github.com/gfx-rs/wgpu/actions)
 [![codecov.io](https://codecov.io/gh/gfx-rs/wgpu/branch/master/graph/badge.svg?token=84qJTesmeS)](https://codecov.io/gh/gfx-rs/wgpu)
 
@@ -20,7 +22,7 @@ The repository hosts the following libraries:
   - [![Crates.io](https://img.shields.io/crates/v/wgpu-types.svg?label=wgpu-types)](https://crates.io/crates/wgpu-types) [![docs.rs](https://docs.rs/wgpu-types/badge.svg)](https://docs.rs/wgpu-types/) - Rust types shared between all crates.
   - [![Crates.io](https://img.shields.io/crates/v/deno_webgpu.svg?label=deno_webgpu)](https://crates.io/crates/deno_webgpu) - WebGPU implementation for the Deno JavaScript/TypeScript runtime
 
-The folowing binaries:
+The following binaries:
   - `cts_runner` - WebGPU Conformance Test Suite runner using `deno_webgpu`.
   - `player` - standalone application for replaying the API traces.
   - `wgpu-info` - program that prints out information about all the adapters on the system or invokes a command for every adapter.
@@ -46,10 +48,11 @@ If you want to use wgpu in other languages, there are many bindings to wgpu-nati
 
 ## Community
 
-We have three different matrix rooms that form the wgpu community:
-- [![Matrix](https://img.shields.io/badge/Dev_Matrix-%23wgpu%3Amatrix.org-blueviolet.svg)](https://matrix.to/#/#wgpu:matrix.org) - Discussion of the library's development.
-- [![Matrix](https://img.shields.io/badge/User_Matrix-%23wgpu--users%3Amatrix.org-blueviolet.svg)](https://matrix.to/#/#wgpu-users:matrix.org) - Discussion of using the library and the surrounding ecosystem.
-- [![Matrix](https://img.shields.io/badge/Random_Matrix-%23wgpu--random%3Amatrix.org-blueviolet.svg)](https://matrix.to/#/#wgpu-random:matrix.org) - Discussion of everything else.
+
+We have the Matrix space [![Matrix Space](https://img.shields.io/static/v1?label=Space&message=%23Wgpu&color=blue&logo=matrix)](https://matrix.to/#/#Wgpu:matrix.org) with a few different rooms that form the wgpu community:
+- [![Dev Matrix](https://img.shields.io/static/v1?label=devs&message=%23wgpu&color=blueviolet&logo=matrix)](https://matrix.to/#/#wgpu:matrix.org) - discussion of the library's development.
+- [![User Matrix](https://img.shields.io/static/v1?label=users&message=%23wgpu-users&color=blueviolet&logo=matrix)](https://matrix.to/#/#wgpu-users:matrix.org) - discussion of using the library and the surrounding ecosystem.
+- [![Random Matrix](https://img.shields.io/static/v1?label=random&message=%23wgpu-random&color=blueviolet&logo=matrix)](https://matrix.to/#/#wgpu-random:matrix.org) - discussion of everything else.
 
 ## Wiki
 
@@ -91,7 +94,7 @@ We have multiple methods of testing, each of which tests different qualities abo
 
 ### Core Test Infrastructure
 
-All framework based examples have image comparison tested against their screenshot. 
+All framework based examples have image comparison tested against their screenshot.
 
 To run the test suite on the default device:
 
@@ -139,7 +142,7 @@ To run a given set of tests:
 cargo run --manifest-path ../cts_runner/Cargo.toml --frozen -- ./tools/run_deno --verbose "<test string>"
 ```
 
-To find the full list of tests, go to the [online cts viewer](https://gpuweb.github.io/cts/standalone/?runnow=0&worker=0&debug=0&q=webgpu:*). 
+To find the full list of tests, go to the [online cts viewer](https://gpuweb.github.io/cts/standalone/?runnow=0&worker=0&debug=0&q=webgpu:*).
 
 The list of currently enabled CTS tests can be found [here](./cts_runner/test.lst).
 

@@ -65,8 +65,16 @@ pub enum CreateBindGroupError {
     InvalidTextureView(TextureViewId),
     #[error("sampler {0:?} is invalid")]
     InvalidSampler(SamplerId),
-    #[error("binding count declared with {expected} items, but {actual} items were provided")]
+    #[error(
+        "binding count declared with at most {expected} items, but {actual} items were provided"
+    )]
+    BindingArrayPartialLengthMismatch { actual: usize, expected: usize },
+    #[error(
+        "binding count declared with exactly {expected} items, but {actual} items were provided"
+    )]
     BindingArrayLengthMismatch { actual: usize, expected: usize },
+    #[error("array binding provided zero elements")]
+    BindingArrayZeroLength,
     #[error("bound buffer range {range:?} does not fit in buffer of size {size}")]
     BindingRangeTooLarge {
         buffer: BufferId,
@@ -413,6 +421,14 @@ pub struct BindGroupLayoutDescriptor<'a> {
 
 pub(crate) type BindEntryMap = FastHashMap<u32, wgt::BindGroupLayoutEntry>;
 
+/// Bind group layout.
+///
+/// The lifetime of BGLs is a bit special. They are only referenced on CPU
+/// without considering GPU operations. And on CPU they get manual
+/// inc-refs and dec-refs. In particular, the following objects depend on them:
+///  - produced bind groups
+///  - produced pipeline layouts
+///  - pipelines with implicit layouts
 #[derive(Debug)]
 pub struct BindGroupLayout<A: hal::Api> {
     pub(crate) raw: A::BindGroupLayout,

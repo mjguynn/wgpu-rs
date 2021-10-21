@@ -12,6 +12,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
+            force_fallback_adapter: false,
             // Request an adapter which can render to our surface
             compatible_surface: Some(&surface),
         })
@@ -25,7 +26,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 label: None,
                 features: wgpu::Features::empty(),
                 // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
-                limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+                limits: wgpu::Limits::downlevel_webgl2_defaults()
+                    .using_resolution(adapter.limits()),
             },
             None,
         )
@@ -93,9 +95,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             }
             Event::RedrawRequested(_) => {
                 let frame = surface
-                    .get_current_frame()
-                    .expect("Failed to acquire next swap chain texture")
-                    .output;
+                    .get_current_texture()
+                    .expect("Failed to acquire next swap chain texture");
                 let view = frame
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
@@ -119,6 +120,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                 }
 
                 queue.submit(Some(encoder.finish()));
+                frame.present();
             }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,

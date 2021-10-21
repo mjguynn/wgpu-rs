@@ -120,7 +120,7 @@ impl<T> HResult<T> for (T, i32) {
 
 // Limited by D3D12's root signature size of 64. Each element takes 1 or 2 entries.
 const MAX_ROOT_ELEMENTS: usize = 64;
-const ZERO_BUFFER_SIZE: wgt::BufferAddress = 512 << 10;
+const ZERO_BUFFER_SIZE: wgt::BufferAddress = 256 << 10;
 
 pub struct Instance {
     factory: native::Factory4,
@@ -615,14 +615,17 @@ impl crate::Surface<Api> for Surface {
                     SwapEffect: dxgi::DXGI_SWAP_EFFECT_FLIP_DISCARD,
                 };
 
-                let hr = self.factory.CreateSwapChainForHwnd(
-                    device.present_queue.as_mut_ptr() as *mut _,
-                    self.wnd_handle,
-                    &raw_desc,
-                    ptr::null(),
-                    ptr::null_mut(),
-                    swap_chain1.mut_void() as *mut *mut _,
-                );
+                let hr = {
+                    profiling::scope!("IDXGIFactory4::CreateSwapChainForHwnd");
+                    self.factory.CreateSwapChainForHwnd(
+                        device.present_queue.as_mut_ptr() as *mut _,
+                        self.wnd_handle,
+                        &raw_desc,
+                        ptr::null(),
+                        ptr::null_mut(),
+                        swap_chain1.mut_void() as *mut *mut _,
+                    )
+                };
 
                 if let Err(err) = hr.into_result() {
                     log::error!("SwapChain creation error: {}", err);
@@ -724,7 +727,10 @@ impl crate::Queue<Api> for Queue {
             self.temp_lists.push(cmd_buf.raw.as_list());
         }
 
-        self.raw.execute_command_lists(&self.temp_lists);
+        {
+            profiling::scope!("ID3D12CommandQueue::ExecuteCommandLists");
+            self.raw.execute_command_lists(&self.temp_lists);
+        }
 
         if let Some((fence, value)) = signal_fence {
             self.raw
@@ -746,6 +752,8 @@ impl crate::Queue<Api> for Queue {
             wgt::PresentMode::Fifo => (1, 0),
             wgt::PresentMode::Mailbox => (1, 0),
         };
+
+        profiling::scope!("IDXGISwapchain3::Present");
         sc.raw.Present(interval, flags);
 
         Ok(())

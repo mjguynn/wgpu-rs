@@ -1,12 +1,14 @@
 #[cfg(feature = "trace")]
 use crate::device::trace::Action;
 use crate::{
+    align_to,
     command::{
         extract_texture_selector, validate_linear_texture_data, validate_texture_copy_range,
         CommandBuffer, CopySide, ImageCopyTexture, TransferError,
     },
     conv,
     device::{DeviceError, WaitIdleError},
+    get_lowest_common_denom,
     hub::{Global, GlobalIdentityHandlerFactory, HalApi, Token},
     id,
     resource::{BufferAccessError, BufferMapState, TextureInner},
@@ -269,7 +271,11 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
         }
 
         let stage = device.prepare_stage(data_size)?;
-        unsafe { stage.write(&device.raw, 0, data) }.map_err(DeviceError::from)?;
+        unsafe {
+            profiling::scope!("copy");
+            stage.write(&device.raw, 0, data)
+        }
+        .map_err(DeviceError::from)?;
 
         let mut trackers = device.trackers.lock();
         let (dst, transition) = trackers
@@ -371,7 +377,9 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
         let (selector, dst_base, texture_format) =
             extract_texture_selector(destination, size, &*texture_guard)?;
         let format_desc = texture_format.describe();
-        let (_, bytes_per_array_layer) = validate_linear_texture_data(
+        //Note: `_source_bytes_per_array_layer` is ignored since we have a staging copy,
+        // and it can have a different value.
+        let (_, _source_bytes_per_array_layer) = validate_linear_texture_data(
             data_layout,
             texture_format,
             data.len() as wgt::BufferAddress,
@@ -443,8 +451,8 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
         let mapping = unsafe { device.raw.map_buffer(&stage.buffer, 0..stage_size) }
             .map_err(DeviceError::from)?;
         unsafe {
-            profiling::scope!("copy");
             if stage_bytes_per_row == bytes_per_row {
+                profiling::scope!("copy aligned");
                 // Fast path if the data is already being aligned optimally.
                 ptr::copy_nonoverlapping(
                     data.as_ptr().offset(data_layout.offset as isize),
@@ -452,6 +460,7 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
                     stage_size as usize,
                 );
             } else {
+                profiling::scope!("copy chunked");
                 // Copy row by row into the optimal alignment.
                 let copy_bytes_per_row = stage_bytes_per_row.min(bytes_per_row) as usize;
                 for layer in 0..size.depth_or_array_layers {
@@ -488,7 +497,9 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
             texture_base.array_layer += rel_array_layer;
             hal::BufferTextureCopy {
                 buffer_layout: wgt::ImageDataLayout {
-                    offset: rel_array_layer as u64 * bytes_per_array_layer,
+                    offset: rel_array_layer as u64
+                        * block_rows_per_image as u64
+                        * stage_bytes_per_row as u64,
                     bytes_per_row: NonZeroU32::new(stage_bytes_per_row),
                     rows_per_image: NonZeroU32::new(block_rows_per_image),
                 },
@@ -868,48 +879,4 @@ impl<G: GlobalIdentityHandlerFactory> Global<G> {
         }
         Ok(())
     }
-}
-
-fn get_lowest_common_denom(a: u32, b: u32) -> u32 {
-    let gcd = if a >= b {
-        get_greatest_common_divisor(a, b)
-    } else {
-        get_greatest_common_divisor(b, a)
-    };
-    a * b / gcd
-}
-
-fn get_greatest_common_divisor(mut a: u32, mut b: u32) -> u32 {
-    assert!(a >= b);
-    loop {
-        let c = a % b;
-        if c == 0 {
-            return b;
-        } else {
-            a = b;
-            b = c;
-        }
-    }
-}
-
-fn align_to(value: u32, alignment: u32) -> u32 {
-    match value % alignment {
-        0 => value,
-        other => value - other + alignment,
-    }
-}
-
-#[test]
-fn test_lcd() {
-    assert_eq!(get_lowest_common_denom(2, 2), 2);
-    assert_eq!(get_lowest_common_denom(2, 3), 6);
-    assert_eq!(get_lowest_common_denom(6, 4), 12);
-}
-
-#[test]
-fn test_gcd() {
-    assert_eq!(get_greatest_common_divisor(5, 1), 1);
-    assert_eq!(get_greatest_common_divisor(4, 2), 2);
-    assert_eq!(get_greatest_common_divisor(6, 4), 2);
-    assert_eq!(get_greatest_common_divisor(7, 7), 7);
 }

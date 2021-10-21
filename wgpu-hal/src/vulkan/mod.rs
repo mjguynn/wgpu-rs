@@ -86,6 +86,7 @@ struct InstanceShared {
     debug_utils: Option<DebugUtils>,
     get_physical_device_properties: Option<vk::KhrGetPhysicalDeviceProperties2Fn>,
     entry: ash::Entry,
+    has_nv_optimus: bool,
 }
 
 pub struct Instance {
@@ -227,6 +228,82 @@ struct FramebufferKey {
     sample_count: u32,
 }
 
+bitflags::bitflags! {
+    pub struct UpdateAfterBindTypes: u8 {
+        const UNIFORM_BUFFER = 0x1;
+        const STORAGE_BUFFER = 0x2;
+        const SAMPLED_TEXTURE = 0x4;
+        const STORAGE_TEXTURE = 0x8;
+    }
+}
+
+impl UpdateAfterBindTypes {
+    fn from_limits(limits: &wgt::Limits, phd_limits: &vk::PhysicalDeviceLimits) -> Self {
+        let mut uab_types = UpdateAfterBindTypes::empty();
+        uab_types.set(
+            UpdateAfterBindTypes::UNIFORM_BUFFER,
+            limits.max_uniform_buffers_per_shader_stage
+                > phd_limits.max_per_stage_descriptor_uniform_buffers,
+        );
+        uab_types.set(
+            UpdateAfterBindTypes::STORAGE_BUFFER,
+            limits.max_storage_buffers_per_shader_stage
+                > phd_limits.max_per_stage_descriptor_storage_buffers,
+        );
+        uab_types.set(
+            UpdateAfterBindTypes::SAMPLED_TEXTURE,
+            limits.max_sampled_textures_per_shader_stage
+                > phd_limits.max_per_stage_descriptor_sampled_images,
+        );
+        uab_types.set(
+            UpdateAfterBindTypes::STORAGE_TEXTURE,
+            limits.max_storage_textures_per_shader_stage
+                > phd_limits.max_per_stage_descriptor_storage_images,
+        );
+        uab_types
+    }
+
+    fn from_features(features: &adapter::PhysicalDeviceFeatures) -> Self {
+        let mut uab_types = UpdateAfterBindTypes::empty();
+        if let Some(vk_12) = features.vulkan_1_2 {
+            uab_types.set(
+                UpdateAfterBindTypes::UNIFORM_BUFFER,
+                vk_12.descriptor_binding_uniform_buffer_update_after_bind != 0,
+            );
+            uab_types.set(
+                UpdateAfterBindTypes::STORAGE_BUFFER,
+                vk_12.descriptor_binding_storage_buffer_update_after_bind != 0,
+            );
+            uab_types.set(
+                UpdateAfterBindTypes::SAMPLED_TEXTURE,
+                vk_12.descriptor_binding_sampled_image_update_after_bind != 0,
+            );
+            uab_types.set(
+                UpdateAfterBindTypes::STORAGE_TEXTURE,
+                vk_12.descriptor_binding_storage_image_update_after_bind != 0,
+            );
+        } else if let Some(di) = features.descriptor_indexing {
+            uab_types.set(
+                UpdateAfterBindTypes::UNIFORM_BUFFER,
+                di.descriptor_binding_uniform_buffer_update_after_bind != 0,
+            );
+            uab_types.set(
+                UpdateAfterBindTypes::STORAGE_BUFFER,
+                di.descriptor_binding_storage_buffer_update_after_bind != 0,
+            );
+            uab_types.set(
+                UpdateAfterBindTypes::SAMPLED_TEXTURE,
+                di.descriptor_binding_sampled_image_update_after_bind != 0,
+            );
+            uab_types.set(
+                UpdateAfterBindTypes::STORAGE_TEXTURE,
+                di.descriptor_binding_storage_image_update_after_bind != 0,
+            );
+        }
+        uab_types
+    }
+}
+
 struct DeviceShared {
     raw: ash::Device,
     handle_is_owned: bool,
@@ -234,6 +311,7 @@ struct DeviceShared {
     extension_fns: DeviceExtensionFunctions,
     vendor_id: u32,
     timestamp_period: f32,
+    uab_types: UpdateAfterBindTypes,
     downlevel_flags: wgt::DownlevelFlags,
     private_caps: PrivateCapabilities,
     workarounds: Workarounds,
@@ -314,6 +392,7 @@ pub struct BindGroupLayout {
     raw: vk::DescriptorSetLayout,
     desc_count: gpu_descriptor::DescriptorTotalCount,
     types: Box<[(vk::DescriptorType, u32)]>,
+    requires_update_after_bind: bool,
 }
 
 #[derive(Debug)]
@@ -370,9 +449,13 @@ pub struct CommandBuffer {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ShaderModule {
     Raw(vk::ShaderModule),
-    Intermediate(crate::NagaShader),
+    Intermediate {
+        naga_shader: crate::NagaShader,
+        runtime_checks: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -526,6 +609,7 @@ impl crate::Queue<Api> for Queue {
         };
         vk_info = vk_info.signal_semaphores(&semaphores[..signal_count]);
 
+        profiling::scope!("vkQueueSubmit");
         self.device
             .raw
             .queue_submit(self.raw, &[vk_info.build()], fence_raw)?;
@@ -551,14 +635,16 @@ impl crate::Queue<Api> for Queue {
             self.relay_active = false;
         }
 
-        let suboptimal = self
-            .swapchain_fn
-            .queue_present(self.raw, &vk_info)
-            .map_err(|error| match error {
-                vk::Result::ERROR_OUT_OF_DATE_KHR => crate::SurfaceError::Outdated,
-                vk::Result::ERROR_SURFACE_LOST_KHR => crate::SurfaceError::Lost,
-                _ => crate::DeviceError::from(error).into(),
-            })?;
+        let suboptimal = {
+            profiling::scope!("vkQueuePresentKHR");
+            self.swapchain_fn
+                .queue_present(self.raw, &vk_info)
+                .map_err(|error| match error {
+                    vk::Result::ERROR_OUT_OF_DATE_KHR => crate::SurfaceError::Outdated,
+                    vk::Result::ERROR_SURFACE_LOST_KHR => crate::SurfaceError::Lost,
+                    _ => crate::DeviceError::from(error).into(),
+                })?
+        };
         if suboptimal {
             log::warn!("Suboptimal present of frame {}", texture.index);
         }

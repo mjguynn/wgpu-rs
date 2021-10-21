@@ -135,13 +135,12 @@ impl super::CommandEncoder {
 
     fn prepare_draw(&mut self, first_instance: u32) {
         if first_instance != 0 {
-            self.state.dirty_vbuf_mask = self.state.instance_vbuf_mask;
+            self.state.dirty_vbuf_mask |= self.state.instance_vbuf_mask;
         }
         if self.state.dirty_vbuf_mask != 0 {
             self.rebind_vertex_data(first_instance);
-            if first_instance == 0 {
-                self.state.dirty_vbuf_mask = 0;
-            }
+            let vertex_rate_mask = self.state.dirty_vbuf_mask & !self.state.instance_vbuf_mask;
+            self.state.dirty_vbuf_mask ^= vertex_rate_mask;
         }
     }
 
@@ -245,19 +244,6 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         });
     }
 
-    unsafe fn clear_texture(
-        &mut self,
-        texture: &super::Texture,
-        subresource_range: &wgt::ImageSubresourceRange,
-    ) {
-        let (dst, dst_target) = texture.inner.as_native();
-        self.cmd_buffer.commands.push(C::ClearTexture {
-            dst,
-            dst_target,
-            subresource_range: subresource_range.clone(),
-        });
-    }
-
     unsafe fn copy_buffer_to_buffer<T>(
         &mut self,
         src: &super::Buffer,
@@ -266,14 +252,17 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
     ) where
         T: Iterator<Item = crate::BufferCopy>,
     {
-        //TODO: preserve `src.target` and `dst.target`
-        // at least for the buffers that require it.
+        let (src_target, dst_target) = if src.target == dst.target {
+            (glow::COPY_READ_BUFFER, glow::COPY_WRITE_BUFFER)
+        } else {
+            (src.target, dst.target)
+        };
         for copy in regions {
             self.cmd_buffer.commands.push(C::CopyBufferToBuffer {
                 src: src.raw,
-                src_target: glow::COPY_READ_BUFFER,
+                src_target,
                 dst: dst.raw,
-                dst_target: glow::COPY_WRITE_BUFFER,
+                dst_target,
                 copy,
             })
         }

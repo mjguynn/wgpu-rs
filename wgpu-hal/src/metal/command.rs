@@ -24,8 +24,10 @@ impl super::CommandEncoder {
     fn enter_blit(&mut self) -> &mtl::BlitCommandEncoderRef {
         if self.state.blit.is_none() {
             debug_assert!(self.state.render.is_none() && self.state.compute.is_none());
-            let cmd_buf = self.raw_cmd_buf.as_ref().unwrap();
-            self.state.blit = Some(cmd_buf.new_blit_command_encoder().to_owned());
+            objc::rc::autoreleasepool(|| {
+                let cmd_buf = self.raw_cmd_buf.as_ref().unwrap();
+                self.state.blit = Some(cmd_buf.new_blit_command_encoder().to_owned());
+            });
         }
         self.state.blit.as_ref().unwrap()
     }
@@ -130,74 +132,6 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
     unsafe fn clear_buffer(&mut self, buffer: &super::Buffer, range: crate::MemoryRange) {
         let encoder = self.enter_blit();
         encoder.fill_buffer(&buffer.raw, conv::map_range(&range), 0);
-    }
-
-    unsafe fn clear_texture(
-        &mut self,
-        texture: &super::Texture,
-        subresource_range: &wgt::ImageSubresourceRange,
-    ) {
-        let shared = self.shared.clone();
-        let encoder = self.enter_blit();
-
-        let format_desc = texture.format.describe();
-
-        let mip_range = subresource_range.base_mip_level..match subresource_range.mip_level_count {
-            Some(c) => subresource_range.base_mip_level + c.get(),
-            None => texture.mip_levels,
-        };
-        let array_range = subresource_range.base_array_layer
-            ..match subresource_range.array_layer_count {
-                Some(c) => subresource_range.base_array_layer + c.get(),
-                None => texture.array_layers,
-            };
-
-        for mip_level in mip_range {
-            // Note that Metal requires this only to be a multiple of the pixel size, not some other constant like in other APIs.
-            let mip_size = texture.copy_size.at_mip_level(mip_level);
-            let bytes_per_row = mip_size.width as u64 / format_desc.block_dimensions.0 as u64
-                * format_desc.block_size as u64;
-            let max_rows_per_copy = super::ZERO_BUFFER_SIZE / bytes_per_row;
-            // round down to a multiple of rows needed by the texture format
-            let max_rows_per_copy = max_rows_per_copy / format_desc.block_dimensions.1 as u64
-                * format_desc.block_dimensions.1 as u64;
-            assert!(max_rows_per_copy > 0, "Zero buffer size is too small to fill a single row of a texture of type {:?}, size {:?} and format {:?}",
-                        texture.raw_type, texture.copy_size, texture.format);
-
-            for array_layer in array_range.clone() {
-                // 3D textures are quickly massive in memory size, so we don't bother trying to do more than one layer at once.
-                for z in 0..mip_size.depth as u64 {
-                    // May need multiple copies for each subresource! We assume that we never need to split a row.
-                    let mut num_rows_left = mip_size.height as u64;
-                    while num_rows_left > 0 {
-                        let num_rows = num_rows_left.min(max_rows_per_copy);
-                        let source_size = mtl::MTLSize {
-                            width: mip_size.width as u64,
-                            height: num_rows,
-                            depth: 1,
-                        };
-                        let destination_origion = mtl::MTLOrigin {
-                            x: 0,
-                            y: mip_size.height as u64 - num_rows_left,
-                            z,
-                        };
-                        encoder.copy_from_buffer_to_texture(
-                            &shared.zero_buffer,
-                            0,
-                            bytes_per_row,
-                            bytes_per_row * num_rows,
-                            source_size,
-                            &texture.raw,
-                            array_layer as u64,
-                            mip_level as u64,
-                            destination_origion,
-                            mtl::MTLBlitOption::empty(),
-                        );
-                        num_rows_left -= num_rows;
-                    }
-                }
-            }
-        }
     }
 
     unsafe fn copy_buffer_to_buffer<T>(
@@ -389,80 +323,82 @@ impl crate::CommandEncoder<super::Api> for super::CommandEncoder {
         self.begin_pass();
         self.state.index = None;
 
-        let descriptor = mtl::RenderPassDescriptor::new();
-        //TODO: set visibility results buffer
+        objc::rc::autoreleasepool(|| {
+            let descriptor = mtl::RenderPassDescriptor::new();
+            //TODO: set visibility results buffer
 
-        for (i, at) in desc.color_attachments.iter().enumerate() {
-            let at_descriptor = descriptor.color_attachments().object_at(i as u64).unwrap();
-            at_descriptor.set_texture(Some(&at.target.view.raw));
-            if let Some(ref resolve) = at.resolve_target {
-                //Note: the selection of levels and slices is already handled by `TextureView`
-                at_descriptor.set_resolve_texture(Some(&resolve.view.raw));
-            }
-            let load_action = if at.ops.contains(crate::AttachmentOps::LOAD) {
-                mtl::MTLLoadAction::Load
-            } else {
-                at_descriptor.set_clear_color(conv::map_clear_color(&at.clear_value));
-                mtl::MTLLoadAction::Clear
-            };
-            let store_action = conv::map_store_action(
-                at.ops.contains(crate::AttachmentOps::STORE),
-                at.resolve_target.is_some(),
-            );
-            at_descriptor.set_load_action(load_action);
-            at_descriptor.set_store_action(store_action);
-        }
-
-        if let Some(ref at) = desc.depth_stencil_attachment {
-            if at.target.view.aspects.contains(crate::FormatAspects::DEPTH) {
-                let at_descriptor = descriptor.depth_attachment().unwrap();
+            for (i, at) in desc.color_attachments.iter().enumerate() {
+                let at_descriptor = descriptor.color_attachments().object_at(i as u64).unwrap();
                 at_descriptor.set_texture(Some(&at.target.view.raw));
-
-                let load_action = if at.depth_ops.contains(crate::AttachmentOps::LOAD) {
+                if let Some(ref resolve) = at.resolve_target {
+                    //Note: the selection of levels and slices is already handled by `TextureView`
+                    at_descriptor.set_resolve_texture(Some(&resolve.view.raw));
+                }
+                let load_action = if at.ops.contains(crate::AttachmentOps::LOAD) {
                     mtl::MTLLoadAction::Load
                 } else {
-                    at_descriptor.set_clear_depth(at.clear_value.0 as f64);
+                    at_descriptor.set_clear_color(conv::map_clear_color(&at.clear_value));
                     mtl::MTLLoadAction::Clear
                 };
-                let store_action = if at.depth_ops.contains(crate::AttachmentOps::STORE) {
-                    mtl::MTLStoreAction::Store
-                } else {
-                    mtl::MTLStoreAction::DontCare
-                };
+                let store_action = conv::map_store_action(
+                    at.ops.contains(crate::AttachmentOps::STORE),
+                    at.resolve_target.is_some(),
+                );
                 at_descriptor.set_load_action(load_action);
                 at_descriptor.set_store_action(store_action);
             }
-            if at
-                .target
-                .view
-                .aspects
-                .contains(crate::FormatAspects::STENCIL)
-            {
-                let at_descriptor = descriptor.stencil_attachment().unwrap();
-                at_descriptor.set_texture(Some(&at.target.view.raw));
 
-                let load_action = if at.stencil_ops.contains(crate::AttachmentOps::LOAD) {
-                    mtl::MTLLoadAction::Load
-                } else {
-                    at_descriptor.set_clear_stencil(at.clear_value.1);
-                    mtl::MTLLoadAction::Clear
-                };
-                let store_action = if at.stencil_ops.contains(crate::AttachmentOps::STORE) {
-                    mtl::MTLStoreAction::Store
-                } else {
-                    mtl::MTLStoreAction::DontCare
-                };
-                at_descriptor.set_load_action(load_action);
-                at_descriptor.set_store_action(store_action);
+            if let Some(ref at) = desc.depth_stencil_attachment {
+                if at.target.view.aspects.contains(crate::FormatAspects::DEPTH) {
+                    let at_descriptor = descriptor.depth_attachment().unwrap();
+                    at_descriptor.set_texture(Some(&at.target.view.raw));
+
+                    let load_action = if at.depth_ops.contains(crate::AttachmentOps::LOAD) {
+                        mtl::MTLLoadAction::Load
+                    } else {
+                        at_descriptor.set_clear_depth(at.clear_value.0 as f64);
+                        mtl::MTLLoadAction::Clear
+                    };
+                    let store_action = if at.depth_ops.contains(crate::AttachmentOps::STORE) {
+                        mtl::MTLStoreAction::Store
+                    } else {
+                        mtl::MTLStoreAction::DontCare
+                    };
+                    at_descriptor.set_load_action(load_action);
+                    at_descriptor.set_store_action(store_action);
+                }
+                if at
+                    .target
+                    .view
+                    .aspects
+                    .contains(crate::FormatAspects::STENCIL)
+                {
+                    let at_descriptor = descriptor.stencil_attachment().unwrap();
+                    at_descriptor.set_texture(Some(&at.target.view.raw));
+
+                    let load_action = if at.stencil_ops.contains(crate::AttachmentOps::LOAD) {
+                        mtl::MTLLoadAction::Load
+                    } else {
+                        at_descriptor.set_clear_stencil(at.clear_value.1);
+                        mtl::MTLLoadAction::Clear
+                    };
+                    let store_action = if at.stencil_ops.contains(crate::AttachmentOps::STORE) {
+                        mtl::MTLStoreAction::Store
+                    } else {
+                        mtl::MTLStoreAction::DontCare
+                    };
+                    at_descriptor.set_load_action(load_action);
+                    at_descriptor.set_store_action(store_action);
+                }
             }
-        }
 
-        let raw = self.raw_cmd_buf.as_ref().unwrap();
-        let encoder = raw.new_render_command_encoder(descriptor);
-        if let Some(label) = desc.label {
-            encoder.set_label(label);
-        }
-        self.state.render = Some(encoder.to_owned());
+            let raw = self.raw_cmd_buf.as_ref().unwrap();
+            let encoder = raw.new_render_command_encoder(descriptor);
+            if let Some(label) = desc.label {
+                encoder.set_label(label);
+            }
+            self.state.render = Some(encoder.to_owned());
+        });
     }
 
     unsafe fn end_render_pass(&mut self) {
