@@ -1,6 +1,6 @@
 use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::time::{Instant};
 use winit::{
     event::{self, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -205,6 +205,24 @@ fn start<E: Example>(
         queue,
     }: Setup,
 ) {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 1 && args.len() != 3 {
+        println!("Usage of modified example: either no arguments or two arguments");
+        println!("Optional arguments: name_of_file iteration_count");
+        return;
+    }
+    let mut final_frame_count = -1;
+    if args.len() == 3 {
+        let temp =  match args[2].parse::<i32>() {
+            | Ok(i) => i,
+            | _ => -1
+        };
+        if temp < 0 {
+            println!("Second argument must be a positive integer");
+            return;
+        }
+        final_frame_count = temp;
+    }
     let spawner = Spawner::new();
     let mut config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -223,7 +241,8 @@ fn start<E: Example>(
     #[cfg(not(target_arch = "wasm32"))]
     let mut last_frame_inst = Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
-    let (mut frame_count, mut accum_time) = (0, 0.0);
+    let (mut frame_count, mut accum_time, mut frame_total) = (0, 0.0, 0);
+    let mut frame_str = "".to_string();
 
     log::info!("Entering render loop...");
     event_loop.run(move |event, _, control_flow| {
@@ -315,8 +334,15 @@ fn start<E: Example>(
                             "Avg frame time {}ms",
                             accum_time * 1000.0 / frame_count as f32
                         );
+                        frame_str += &((accum_time * 1000.0 / frame_count as f32).to_string() + &"\n".to_string());
                         accum_time = 0.0;
                         frame_count = 0;
+                        frame_total += 1;
+                        if final_frame_count > 0 && frame_total >= final_frame_count {
+                            std::fs::write(&args[1], &frame_str).
+                                expect("Unable to write file");
+                            std::process::exit(0);
+                        }
                     }
                 }
 
