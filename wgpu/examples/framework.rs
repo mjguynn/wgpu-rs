@@ -237,7 +237,7 @@ fn start<E: Example>(
     let mut example = E::init(&config, &adapter, &device, &queue);
 
     #[cfg(not(target_arch = "wasm32"))]
-    let mut last_update_inst = Instant::now();
+    //let mut last_update_inst = Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
     let mut last_frame_inst = Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
@@ -266,7 +266,7 @@ fn start<E: Example>(
                     // let time_since_last_frame = last_update_inst.elapsed();
                     // if time_since_last_frame >= target_frametime {
                         window.request_redraw();
-                        last_update_inst = Instant::now();
+                        //last_update_inst = Instant::now();
                     // } else {
                     //     *control_flow = ControlFlow::WaitUntil(
                     //         Instant::now() + target_frametime - time_since_last_frame,

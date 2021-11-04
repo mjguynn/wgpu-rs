@@ -88,19 +88,18 @@ struct Example {
     index_buf: wgpu::Buffer,
     index_count: usize,
     bind_group_layout: wgpu::BindGroupLayout,
-    center_list: Vec<cgmath::Vector3<f32>>,
-    uniform_bufs: Vec<wgpu::Buffer>,
+    uniform_buf: wgpu::Buffer,
     texture_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     pipeline_wire: Option<wgpu::RenderPipeline>,
 }
 
 impl Example {
-    fn generate_matrix(aspect_ratio: f32, center: cgmath::Vector3<f32>) -> cgmath::Matrix4<f32> {
+    fn generate_matrix(aspect_ratio: f32) -> cgmath::Matrix4<f32> {
         let mx_projection = cgmath::perspective(cgmath::Deg(45f32), aspect_ratio, 1.0, 10.0);
         let mx_view = cgmath::Matrix4::look_at_rh(
             cgmath::Point3::new(1.5f32, -5.0, 3.0),
-            cgmath::Point3::new(center[0], center[1], center[2]),
+            cgmath::Point3::new(0f32, 0.0, 0.0),
             cgmath::Vector3::unit_z(),
         );
         let mx_correction = framework::OPENGL_TO_WGPU_MATRIX;
@@ -197,24 +196,13 @@ impl framework::Example for Example {
         );
 
         // Create other resources
-        let center_list = vec![
-            cgmath::Vector3::new(0.0, 0.0, 0.0),
-            cgmath::Vector3::new(1.0, 0.0, 0.0),
-            cgmath::Vector3::new(0.0, 1.0, 0.0),
-            cgmath::Vector3::new(0.0, 0.0, 1.0)
-        ];
-        
-        let mut uniform_bufs: Vec<wgpu::Buffer> = vec![];
-        for center in center_list.clone() {
-            let mx_total = 
-                Self::generate_matrix(config.width as f32 / config.height as f32, center);
-            let mx_ref: &[f32; 16] = mx_total.as_ref();
-            uniform_bufs.push(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Uniform Buffer"),
-                contents: bytemuck::cast_slice(mx_ref),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }));
-        }
+        let mx_total = Self::generate_matrix(config.width as f32 / config.height as f32);
+        let mx_ref: &[f32; 16] = mx_total.as_ref();
+        let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            contents: bytemuck::cast_slice(mx_ref),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
 
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: None,
@@ -304,9 +292,8 @@ impl framework::Example for Example {
             index_buf,
             index_count: index_data.len(),
             bind_group_layout,
-            center_list,
             texture_view,
-            uniform_bufs,
+            uniform_buf,
             pipeline,
             pipeline_wire,
         }
@@ -322,12 +309,9 @@ impl framework::Example for Example {
         _device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        for i in 0..self.center_list.len() {
-            let mx_total = Self::generate_matrix(config.width as f32 / config.height as f32,
-                self.center_list[i]);
-            let mx_ref: &[f32; 16] = mx_total.as_ref();
-            queue.write_buffer(&self.uniform_bufs[i], 0, bytemuck::cast_slice(mx_ref));
-        }
+        let mx_total = Self::generate_matrix(config.width as f32 / config.height as f32);
+        let mx_ref: &[f32; 16] = mx_total.as_ref();
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(mx_ref));
     }
 
     fn render(
@@ -341,6 +325,35 @@ impl framework::Example for Example {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
             // Create bind group
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.texture_view),
+                    },
+                ],
+                label: None,
+            });
+            // duplicate call to test perf difference
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.texture_view),
+                    },
+                ],
+                label: None,
+            });
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[wgpu::RenderPassColorAttachment {
@@ -358,33 +371,17 @@ impl framework::Example for Example {
                 }],
                 depth_stencil_attachment: None,
             });
-            for buffer in &self.uniform_bufs {
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    layout: &self.bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&self.texture_view),
-                        },
-                    ],
-                    label: None,
-                });
-                rpass.push_debug_group("Prepare data for draw.");
-                rpass.set_pipeline(&self.pipeline);
-                rpass.set_bind_group(0, &bind_group, &[]);
-                rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
-                rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
-                rpass.pop_debug_group();
-                rpass.insert_debug_marker("Draw!");
+            rpass.push_debug_group("Prepare data for draw.");
+            rpass.set_pipeline(&self.pipeline);
+            rpass.set_bind_group(0, &bind_group, &[]);
+            rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
+            rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
+            rpass.pop_debug_group();
+            rpass.insert_debug_marker("Draw!");
+            rpass.draw_indexed(0..self.index_count as u32, 0, 0..1);
+            if let Some(ref pipe) = self.pipeline_wire {
+                rpass.set_pipeline(pipe);
                 rpass.draw_indexed(0..self.index_count as u32, 0, 0..1);
-                if let Some(ref pipe) = self.pipeline_wire {
-                    rpass.set_pipeline(pipe);
-                    rpass.draw_indexed(0..self.index_count as u32, 0, 0..1);
-                }
             }
         }
 
