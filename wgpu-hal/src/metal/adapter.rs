@@ -79,6 +79,12 @@ impl crate::Adapter<super::Api> for super::Adapter {
                     | Tfc::COLOR_ATTACHMENT
                     | Tfc::COLOR_ATTACHMENT_BLEND
             }
+            Tf::R16Unorm | Tf::R16Snorm => {
+                Tfc::SAMPLED_LINEAR
+                    | Tfc::STORAGE
+                    | Tfc::COLOR_ATTACHMENT
+                    | Tfc::COLOR_ATTACHMENT_BLEND
+            }
             Tf::Rg8Unorm | Tf::Rg8Snorm => {
                 Tfc::SAMPLED_LINEAR
                     | Tfc::STORAGE
@@ -104,6 +110,12 @@ impl crate::Adapter<super::Api> for super::Adapter {
             }
             Tf::Rg16Uint | Tf::Rg16Sint => {
                 read_write_tier2_if | Tfc::STORAGE | Tfc::COLOR_ATTACHMENT
+            }
+            Tf::Rg16Unorm | Tf::Rg16Snorm => {
+                Tfc::SAMPLED_LINEAR
+                    | Tfc::STORAGE
+                    | Tfc::COLOR_ATTACHMENT
+                    | Tfc::COLOR_ATTACHMENT_BLEND
             }
             Tf::Rg16Float => {
                 read_write_tier2_if
@@ -158,6 +170,12 @@ impl crate::Adapter<super::Api> for super::Adapter {
             }
             Tf::Rgba16Uint | Tf::Rgba16Sint => {
                 read_write_tier2_if | Tfc::STORAGE | Tfc::COLOR_ATTACHMENT
+            }
+            Tf::Rgba16Unorm | Tf::Rgba16Snorm => {
+                Tfc::SAMPLED_LINEAR
+                    | Tfc::STORAGE
+                    | Tfc::COLOR_ATTACHMENT
+                    | Tfc::COLOR_ATTACHMENT_BLEND
             }
             Tf::Rgba16Float => {
                 read_write_tier2_if
@@ -582,7 +600,8 @@ impl super::PrivateCapabilities {
             } else {
                 MTLLanguageVersion::V1_0
             },
-            exposed_queues: 1,
+            // macOS 10.11 doesn't support read-write resources
+            fragment_rw_storage: !os_is_mac || Self::version_at_least(major, minor, 10, 12),
             read_write_texture_tier: if os_is_mac {
                 if Self::version_at_least(major, minor, 10, 13) {
                     device.read_write_texture_support()
@@ -786,6 +805,30 @@ impl super::PrivateCapabilities {
             } else {
                 4
             },
+            max_varying_components: if Self::supports_any(
+                device,
+                &[
+                    MTLFeatureSet::macOS_GPUFamily1_v1,
+                    MTLFeatureSet::macOS_GPUFamily2_v1,
+                ],
+            ) {
+                128
+            } else {
+                60
+            },
+            max_threads_per_group: if Self::supports_any(
+                device,
+                &[
+                    MTLFeatureSet::iOS_GPUFamily4_v2,
+                    MTLFeatureSet::iOS_GPUFamily5_v1,
+                    MTLFeatureSet::macOS_GPUFamily1_v1,
+                    MTLFeatureSet::macOS_GPUFamily2_v1,
+                ],
+            ) {
+                1024
+            } else {
+                512
+            },
             max_total_threadgroup_memory: if Self::supports_any(
                 device,
                 &[
@@ -860,7 +903,8 @@ impl super::PrivateCapabilities {
                 Self::version_at_least(major, minor, 11, 0)
             },
             //Depth clipping is supported on all macOS GPU families and iOS family 4 and later
-            supports_depth_clamping: device.supports_feature_set(MTLFeatureSet::iOS_GPUFamily4_v1)
+            supports_depth_clip_control: device
+                .supports_feature_set(MTLFeatureSet::iOS_GPUFamily4_v1)
                 || os_is_mac,
         }
     }
@@ -870,13 +914,15 @@ impl super::PrivateCapabilities {
 
         let mut features = F::empty()
             | F::TEXTURE_COMPRESSION_BC
+            | F::INDIRECT_FIRST_INSTANCE
             | F::MAPPABLE_PRIMARY_BUFFERS
             | F::VERTEX_WRITABLE_STORAGE
             | F::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | F::POLYGON_MODE_LINE
-            | F::CLEAR_COMMANDS;
+            | F::CLEAR_COMMANDS
+            | F::TEXTURE_FORMAT_16BIT_NORM;
 
-        features.set(F::DEPTH_CLAMPING, self.supports_depth_clamping);
+        features.set(F::DEPTH_CLIP_CONTROL, self.supports_depth_clip_control);
 
         features.set(
             F::TEXTURE_BINDING_ARRAY
@@ -903,6 +949,10 @@ impl super::PrivateCapabilities {
 
     pub fn capabilities(&self) -> crate::Capabilities {
         let mut downlevel = wgt::DownlevelCapabilities::default();
+        downlevel.flags.set(
+            wgt::DownlevelFlags::FRAGMENT_WRITABLE_STORAGE,
+            self.fragment_rw_storage,
+        );
         downlevel.flags.set(
             wgt::DownlevelFlags::CUBE_ARRAY_TEXTURES,
             self.texture_cube_array,
@@ -941,6 +991,14 @@ impl super::PrivateCapabilities {
                 max_push_constant_size: 0x1000,
                 min_uniform_buffer_offset_alignment: self.buffer_alignment as u32,
                 min_storage_buffer_offset_alignment: self.buffer_alignment as u32,
+                //TODO: double-check how these match Metal feature set tables
+                max_inter_stage_shader_components: self.max_varying_components,
+                max_compute_workgroup_storage_size: self.max_total_threadgroup_memory,
+                max_compute_invocations_per_workgroup: self.max_threads_per_group,
+                max_compute_workgroup_size_x: 256,
+                max_compute_workgroup_size_y: 256,
+                max_compute_workgroup_size_z: 64,
+                max_compute_workgroups_per_dimension: 0xFFFF,
             },
             alignments: crate::Alignments {
                 buffer_copy_offset: wgt::BufferSize::new(self.buffer_alignment).unwrap(),
@@ -961,11 +1019,15 @@ impl super::PrivateCapabilities {
             Tf::R8Sint => R8Sint,
             Tf::R16Uint => R16Uint,
             Tf::R16Sint => R16Sint,
+            Tf::R16Unorm => R16Unorm,
+            Tf::R16Snorm => R16Snorm,
             Tf::R16Float => R16Float,
             Tf::Rg8Unorm => RG8Unorm,
             Tf::Rg8Snorm => RG8Snorm,
             Tf::Rg8Uint => RG8Uint,
             Tf::Rg8Sint => RG8Sint,
+            Tf::Rg16Unorm => RG16Unorm,
+            Tf::Rg16Snorm => RG16Snorm,
             Tf::R32Uint => R32Uint,
             Tf::R32Sint => R32Sint,
             Tf::R32Float => R32Float,
@@ -986,6 +1048,8 @@ impl super::PrivateCapabilities {
             Tf::Rg32Float => RG32Float,
             Tf::Rgba16Uint => RGBA16Uint,
             Tf::Rgba16Sint => RGBA16Sint,
+            Tf::Rgba16Unorm => RGBA16Unorm,
+            Tf::Rgba16Snorm => RGBA16Snorm,
             Tf::Rgba16Float => RGBA16Float,
             Tf::Rgba32Uint => RGBA32Uint,
             Tf::Rgba32Sint => RGBA32Sint,

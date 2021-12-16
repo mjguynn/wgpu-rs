@@ -32,13 +32,14 @@ pub use wgt::{
     DynamicOffset, Extent3d, Face, Features, FilterMode, FrontFace, ImageDataLayout,
     ImageSubresourceRange, IndexFormat, Limits, MultisampleState, Origin3d,
     PipelineStatisticsTypes, PolygonMode, PowerPreference, PresentMode, PrimitiveState,
-    PrimitiveTopology, PushConstantRange, QueryType, RenderBundleDepthStencil, SamplerBorderColor,
-    ShaderLocation, ShaderModel, ShaderStages, StencilFaceState, StencilOperation, StencilState,
-    StorageTextureAccess, SurfaceConfiguration, SurfaceStatus, TextureAspect, TextureDimension,
-    TextureFormat, TextureFormatFeatureFlags, TextureFormatFeatures, TextureSampleType,
-    TextureUsages, TextureViewDimension, VertexAttribute, VertexFormat, VertexStepMode,
-    COPY_BUFFER_ALIGNMENT, COPY_BYTES_PER_ROW_ALIGNMENT, MAP_ALIGNMENT, PUSH_CONSTANT_ALIGNMENT,
-    QUERY_RESOLVE_BUFFER_ALIGNMENT, QUERY_SET_MAX_QUERIES, QUERY_SIZE, VERTEX_STRIDE_ALIGNMENT,
+    PrimitiveTopology, PushConstantRange, QueryType, RenderBundleDepthStencil, SamplerBindingType,
+    SamplerBorderColor, ShaderLocation, ShaderModel, ShaderStages, StencilFaceState,
+    StencilOperation, StencilState, StorageTextureAccess, SurfaceConfiguration, SurfaceStatus,
+    TextureAspect, TextureDimension, TextureFormat, TextureFormatFeatureFlags,
+    TextureFormatFeatures, TextureSampleType, TextureUsages, TextureViewDimension, VertexAttribute,
+    VertexFormat, VertexStepMode, COPY_BUFFER_ALIGNMENT, COPY_BYTES_PER_ROW_ALIGNMENT,
+    MAP_ALIGNMENT, PUSH_CONSTANT_ALIGNMENT, QUERY_RESOLVE_BUFFER_ALIGNMENT, QUERY_SET_MAX_QUERIES,
+    QUERY_SIZE, VERTEX_STRIDE_ALIGNMENT,
 };
 
 use backend::{BufferMappedRange, Context as C};
@@ -747,7 +748,7 @@ pub enum ShaderSource<'a> {
     /// is passed to `gfx-rs` and `spirv_cross` for translation.
     #[cfg(feature = "spirv")]
     SpirV(Cow<'a, [u32]>),
-    /// GSLS module as a string slice.
+    /// GLSL module as a string slice.
     ///
     /// wgpu will attempt to parse and validate it. The module will get
     /// passed to wgpu-core where it will translate it to the required languages.
@@ -1004,6 +1005,13 @@ pub enum BindingResource<'a> {
     ///
     /// Corresponds to [`wgt::BindingType::Sampler`] with [`BindGroupLayoutEntry::count`] set to None.
     Sampler(&'a Sampler),
+    /// Binding is backed by an array of samplers.
+    ///
+    /// [`Features::TEXTURE_BINDING_ARRAY`] must be supported to use this feature.
+    ///
+    /// Corresponds to [`wgt::BindingType::Sampler`] with [`BindGroupLayoutEntry::count`] set
+    /// to Some.
+    SamplerArray(&'a [&'a Sampler]),
     /// Binding is backed by a texture.
     ///
     /// Corresponds to [`wgt::BindingType::Texture`] and [`wgt::BindingType::StorageTexture`] with
@@ -1293,6 +1301,9 @@ pub struct RenderPipelineDescriptor<'a> {
     pub multisample: MultisampleState,
     /// The compiled fragment stage, its entry point, and the color targets.
     pub fragment: Option<FragmentState<'a>>,
+    /// If the pipeline will be used with a multiview render pass, this indicates how many array
+    /// layers the attachments will have.
+    pub multiview: Option<NonZeroU32>,
 }
 
 /// Describes the attachments of a compute pass.
@@ -1348,6 +1359,8 @@ pub struct RenderBundleEncoderDescriptor<'a> {
     /// Sample count this render bundle is capable of rendering to. This must match the pipelines and
     /// the renderpasses it is used in.
     pub sample_count: u32,
+    /// If this render bundle will rendering to multiple array layers in the attachments at the same time.
+    pub multiview: Option<NonZeroU32>,
 }
 
 /// Surface texture that can be rendered to.
@@ -1825,6 +1838,7 @@ impl Device {
     ///
     /// - `hal_texture` must be created from this device internal handle
     /// - `hal_texture` must be created respecting `desc`
+    /// - `hal_texture` must be initialized
     #[cfg(not(target_arch = "wasm32"))]
     pub unsafe fn create_texture_from_hal<A: wgc::hub::HalApi>(
         &self,
@@ -1871,6 +1885,21 @@ impl Device {
     /// Stops frame capture.
     pub fn stop_capture(&self) {
         Context::device_stop_capture(&*self.context, &self.id)
+    }
+
+    /// Returns the inner hal Device using a callback. The hal device will be `None` if the
+    /// backend type argument does not match with this wgpu Device
+    ///
+    /// # Safety
+    ///
+    /// - The raw handle obtained from the hal Device must not be manually destroyed
+    #[cfg(not(target_arch = "wasm32"))]
+    pub unsafe fn as_hal<A: wgc::hub::HalApi, F: FnOnce(Option<&A::Device>) -> R, R>(
+        &self,
+        hal_device_callback: F,
+    ) -> R {
+        self.context
+            .device_as_hal::<A, F, R>(&self.id, hal_device_callback)
     }
 }
 
@@ -2158,12 +2187,12 @@ impl Texture {
     ///
     /// - The raw handle obtained from the hal Texture must not be manually destroyed
     #[cfg(not(target_arch = "wasm32"))]
-    pub unsafe fn as_hal<A: wgc::hub::HalApi>(
+    pub unsafe fn as_hal<A: wgc::hub::HalApi, F: FnOnce(Option<&A::Texture>)>(
         &self,
-        hal_texture_callback: impl FnOnce(Option<&A::Texture>),
+        hal_texture_callback: F,
     ) {
         self.context
-            .texture_as_hal::<A, _>(&self.id, hal_texture_callback)
+            .texture_as_hal::<A, F>(&self.id, hal_texture_callback)
     }
 
     /// Creates a view of this texture.
@@ -2357,7 +2386,6 @@ impl CommandEncoder {
     ///
     /// # Panics
     ///
-    /// - `CLEAR_COMMANDS` extension not enabled
     /// - Buffer does not have `COPY_DST` usage.
     /// - Range it out of bounds
     pub fn clear_buffer(
@@ -2441,7 +2469,7 @@ impl<'a> RenderPass<'a> {
     /// Sets the active bind group for a given bind group index. The bind group layout
     /// in the active pipeline when any `draw()` function is called must match the layout of this bind group.
     ///
-    /// If the bind group have dynamic offsets, provide them in order of their declaration.
+    /// If the bind group have dynamic offsets, provide them in binding order.
     /// These offsets have to be aligned to [`Limits::min_uniform_buffer_offset_alignment`]
     /// or [`Limits::min_storage_buffer_offset_alignment`] appropriately.
     pub fn set_bind_group(
@@ -2563,8 +2591,9 @@ impl<'a> RenderPass<'a> {
     /// struct DrawIndirect {
     ///     vertex_count: u32, // The number of vertices to draw.
     ///     instance_count: u32, // The number of instances to draw.
-    ///     base_vertex: u32, // The Index of the first vertex to draw.
-    ///     base_instance: u32, // The instance ID of the first instance to draw.
+    ///     first_vertex: u32, // The Index of the first vertex to draw.
+    ///     first_instance: u32, // The instance ID of the first instance to draw.
+    ///     // has to be 0, unless [`Features::INDIRECT_FIRST_INSTANCE`] is enabled.
     /// }
     /// ```
     pub fn draw_indirect(&mut self, indirect_buffer: &'a Buffer, indirect_offset: BufferAddress) {
@@ -2584,9 +2613,10 @@ impl<'a> RenderPass<'a> {
     /// struct DrawIndexedIndirect {
     ///     vertex_count: u32, // The number of vertices to draw.
     ///     instance_count: u32, // The number of instances to draw.
-    ///     base_index: u32, // The base index within the index buffer.
+    ///     first_index: u32, // The base index within the index buffer.
     ///     vertex_offset: i32, // The value added to the vertex index before indexing into the vertex buffer.
-    ///     base_instance: u32, // The instance ID of the first instance to draw.
+    ///     first_instance: u32, // The instance ID of the first instance to draw.
+    ///     // has to be 0, unless [`Features::INDIRECT_FIRST_INSTANCE`] is enabled.
     /// }
     /// ```
     pub fn draw_indexed_indirect(
@@ -2846,7 +2876,7 @@ impl<'a> ComputePass<'a> {
     /// Sets the active bind group for a given bind group index. The bind group layout
     /// in the active pipeline when the `dispatch()` function is called must match the layout of this bind group.
     ///
-    /// If the bind group have dynamic offsets, provide them in order of their declaration.
+    /// If the bind group have dynamic offsets, provide them in the binding order.
     /// These offsets have to be aligned to [`Limits::min_uniform_buffer_offset_alignment`]
     /// or [`Limits::min_storage_buffer_offset_alignment`] appropriately.
     pub fn set_bind_group(
@@ -2973,7 +3003,7 @@ impl<'a> RenderBundleEncoder<'a> {
     /// Sets the active bind group for a given bind group index. The bind group layout
     /// in the active pipeline when any `draw()` function is called must match the layout of this bind group.
     ///
-    /// If the bind group have dynamic offsets, provide them in order of their declaration.
+    /// If the bind group have dynamic offsets, provide them in the binding order.
     pub fn set_bind_group(
         &mut self,
         index: u32,
@@ -3127,6 +3157,8 @@ impl Queue {
     /// This method is intended to have low performance costs.
     /// As such, the write is not immediately submitted, and instead enqueued
     /// internally to happen at the start of the next `submit()` call.
+    ///
+    /// This method fails if `data` overruns the size of `buffer` starting at `offset`.
     pub fn write_buffer(&self, buffer: &Buffer, offset: BufferAddress, data: &[u8]) {
         Context::queue_write_buffer(&*self.context, &self.id, &buffer.id, offset, data)
     }
@@ -3136,6 +3168,8 @@ impl Queue {
     /// This method is intended to have low performance costs.
     /// As such, the write is not immediately submitted, and instead enqueued
     /// internally to happen at the start of the next `submit()` call.
+    ///
+    /// This method fails if `data` overruns the size of fragment of `texture` specified with `size`.
     pub fn write_texture(
         &self,
         texture: ImageCopyTexture,

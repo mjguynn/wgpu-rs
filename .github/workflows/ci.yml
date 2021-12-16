@@ -8,6 +8,12 @@ on:
 
 env:
   RUST_BACKTRACE: 1
+  RUST_VERSION: 1.53
+
+# We distinguish the following kinds of builds:
+# - local: build for the same target as we compile on, and do local tests
+# - other: build without testing, e.g. cross-build
+# - web: build for the Web
 
 jobs:
   build:
@@ -18,64 +24,75 @@ jobs:
           # Windows
           - name: Windows x86_64
             os: windows-2019
-            channel: stable
             target: x86_64-pc-windows-msvc
-            kind: test
+            tool: clippy
+            kind: local
             backends: dx12 # dx11
 
           - name: Windows Nightly x86_64
             os: windows-2019
-            channel: nightly
             target: x86_64-pc-windows-msvc
-            kind: compile
+            tool: check
+            kind: other
           
           # MacOS
-
-          # Mac has no software runners, so don't run tests
           - name: MacOS x86_64
             os: macos-10.15
-            channel: stable
             target: x86_64-apple-darwin
-            kind: compile
+            tool: clippy
+            # Mac has no software runners, so don't run tests
+            kind: other
 
+          - name: MacOS aarch64
+            os: macos-11
+            target: aarch64-apple-darwin
+            tool: check
+            # Mac has no software runners, so don't run tests
+            kind: other
           
           # IOS
           - name: IOS aarch64
             os: macos-10.15
-            channel: stable
             target: aarch64-apple-ios
-            kind: compile
+            tool: clippy
+            kind: other
 
 
           # Linux
           - name: Linux x86_64
             os: ubuntu-20.04
-            channel: stable
             target: x86_64-unknown-linux-gnu
-            kind: test
+            tool: clippy
+            kind: local
             backends: vulkan # gl
+
+          - name: Linux aarch64
+            os: ubuntu-20.04
+            target: aarch64-unknown-linux-gnu
+            tool: check
+            kind: other
 
           - name: Linux Nightly x86_64
             os: ubuntu-20.04
-            channel: nightly
             target: x86_64-unknown-linux-gnu
-            kind: compile
+            tool: check
+            kind: other
 
           
           # Android
           - name: Android aarch64
             os: ubuntu-20.04
-            channel: stable
             target: aarch64-linux-android
-            kind: compile
+            tool: clippy
+            kind: other
 
           
           # WebGPU/WebGL
           - name: WebAssembly
             os: ubuntu-20.04
-            channel: stable
             target: wasm32-unknown-unknown
-            kind: webgl
+            tool: clippy
+            kind: web
 
     name: Check ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -89,14 +106,26 @@ jobs:
       - name: checkout repo
         uses: actions/checkout@v2
 
-      - name: install rust
+      # Only run clippy on MSRV
+      - name: install rust stable
+        if: matrix.tool == 'clippy'
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: ${{ matrix.channel }}
+          toolchain: ${{ env.RUST_VERSION }}
           target: ${{ matrix.target }}
-          override: true
           profile: minimal
+          override: true
           components: clippy
+
+      # Other builds can use nightly
+      - name: install rust nightly
+        if: matrix.tool != 'clippy'
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          target: ${{ matrix.target }}
+          profile: minimal
+          override: true
 
       - name: caching
         uses: Swatinem/rust-cache@v1
@@ -109,7 +138,7 @@ jobs:
           echo "$ANDROID_HOME/ndk-bundle/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: install llvmpipe and lavapipe
-        if: matrix.os == 'ubuntu-20.04' && matrix.target != 'aarch64-linux-android' && matrix.kind == 'test'
+        if: matrix.os == 'ubuntu-20.04' && matrix.target != 'aarch64-linux-android' && matrix.kind == 'local'
         run: |
           sudo apt-get update -y -qq
           sudo add-apt-repository ppa:oibaf/graphics-drivers -y
@@ -124,44 +153,43 @@ jobs:
           echo """[profile.dev]
           debug = 1" > .cargo/config.toml
 
-      # This is separate for now because webgl isn't hooked up so we can't compile wgpu-core for wasm
       - name: check web
-        if: matrix.kind == 'webgl'
+        if: matrix.kind == 'web'
         run: |
-          cargo clippy --target ${{ matrix.target }} -p wgpu
+          cargo ${{matrix.tool}} --target ${{ matrix.target }} -p wgpu
 
           # Build for WebGL
-          cargo clippy --target ${{ matrix.target }} -p wgpu --features webgl -- -D warnings
+          cargo ${{matrix.tool}} --target ${{ matrix.target }} -p wgpu --features webgl -- -D warnings
 
           # build docs
           cargo doc --target ${{ matrix.target }} -p wgpu --no-deps
 
       - name: check native
-        if: matrix.kind == 'compile' || matrix.kind == 'test'
+        if: matrix.kind == 'local' || matrix.kind == 'other'
         run: |
           # check with no features
-          cargo clippy --target ${{ matrix.target }} -p wgpu -p wgpu-core -p wgpu-info -p player
+          cargo ${{matrix.tool}} --target ${{ matrix.target }} -p wgpu -p wgpu-core -p wgpu-info -p player
 
           # check with all features
           # explicitly don't mention wgpu-hal so that --all-features don't apply to it
-          cargo clippy --target ${{ matrix.target }} -p wgpu -p wgpu-core -p wgpu-info -p player --examples --tests --all-features 
+          cargo ${{matrix.tool}} --target ${{ matrix.target }} -p wgpu -p wgpu-core -p wgpu-info -p player --examples --tests --all-features
 
           # build docs
           cargo doc --target ${{ matrix.target }} --no-deps
           cargo doc --target ${{ matrix.target }} -p wgpu -p wgpu-core -p wgpu-info -p player --all-features --no-deps
 
-      - name: tests
-        if: matrix.kind == 'test'
+      - name: local tests
+        if: matrix.kind == 'local'
         shell: bash
         run: |
           # run wgpu-info
-          cargo run --target ${{ matrix.target }} --bin wgpu-info
+          cargo run --bin wgpu-info
+          # run unit and player tests
+          cargo test -p wgpu-types -p wgpu-hal -p wgpu-core -p player --no-fail-fast
+          # run native tests
           for backend in ${{ matrix.backends }}; do
             echo "======= NATIVE TESTS $backend ======";
-            # run player tests
-            WGPU_BACKEND=$backend cargo test --target ${{ matrix.target }} -p wgpu-types -p wgpu-hal -p wgpu-core --no-fail-fast -- --nocapture --test-threads=1
-            # run coretests
-            WGPU_BACKEND=$backend cargo test --target ${{ matrix.target }} -p wgpu --no-fail-fast -- --nocapture --test-threads=1
+            WGPU_BACKEND=$backend cargo test -p wgpu --no-fail-fast -- --nocapture --test-threads=1
           done
 
   fmt:

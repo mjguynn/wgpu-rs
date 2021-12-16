@@ -163,10 +163,10 @@ bitflags::bitflags! {
     #[repr(transparent)]
     #[derive(Default)]
     pub struct Features: u64 {
-        /// By default, polygon depth is clipped to 0-1 range. Anything outside of that range
-        /// is rejected, and respective fragments are not touched.
+        /// By default, polygon depth is clipped to 0-1 range before/during rasterization.
+        /// Anything outside of that range is rejected, and respective fragments are not touched.
         ///
-        /// With this extension, we can force clamping of the polygon depth to 0-1. That allows
+        /// With this extension, we can disabling clipping. That allows
         /// shadow map occluders to be rendered into a tighter depth range.
         ///
         /// Supported platforms:
@@ -174,7 +174,7 @@ bitflags::bitflags! {
         /// - some mobile chips
         ///
         /// This is a web and native feature.
-        const DEPTH_CLAMPING = 1 << 0;
+        const DEPTH_CLIP_CONTROL = 1 << 0;
         /// Enables BCn family of compressed textures. All BCn textures use 4x4 pixel blocks
         /// with 8 or 16 bytes per block.
         ///
@@ -189,6 +189,15 @@ bitflags::bitflags! {
         ///
         /// This is a web and native feature.
         const TEXTURE_COMPRESSION_BC = 1 << 1;
+        /// Allows non-zero value for the "first instance" in indirect draw calls.
+        ///
+        /// Supported Platforms:
+        /// - Vulkan (mostly)
+        /// - DX12
+        /// - Metal
+        ///
+        /// This is a web and native feature.
+        const INDIRECT_FIRST_INSTANCE = 1 << 2;
         /// Enables use of Timestamp Queries. These queries tell the current gpu timestamp when
         /// all work before the query is finished. Call [`CommandEncoder::write_timestamp`],
         /// [`RenderPassEncoder::write_timestamp`], or [`ComputePassEncoder::write_timestamp`] to
@@ -206,7 +215,7 @@ bitflags::bitflags! {
         /// - DX12 (works)
         ///
         /// This is a web and native feature.
-        const TIMESTAMP_QUERY = 1 << 2;
+        const TIMESTAMP_QUERY = 1 << 3;
         /// Enables use of Pipeline Statistics Queries. These queries tell the count of various operations
         /// performed between the start and stop call. Call [`RenderPassEncoder::begin_pipeline_statistics_query`] to start
         /// a query, then call [`RenderPassEncoder::end_pipeline_statistics_query`] to stop one.
@@ -221,7 +230,7 @@ bitflags::bitflags! {
         /// - DX12 (works)
         ///
         /// This is a web and native feature.
-        const PIPELINE_STATISTICS_QUERY = 1 << 3;
+        const PIPELINE_STATISTICS_QUERY = 1 << 4;
         /// Webgpu only allows the MAP_READ and MAP_WRITE buffer usage to be matched with
         /// COPY_DST and COPY_SRC respectively. This removes this requirement.
         ///
@@ -526,6 +535,22 @@ bitflags::bitflags! {
         ///
         /// This is a native only feature.
         const SHADER_PRIMITIVE_INDEX = 1 << 39;
+        /// Enables multiview render passes and `builtin(view_index)` in vertex shaders.
+        ///
+        /// Supported platforms:
+        /// - Vulkan
+        ///
+        /// This is a native only feature.
+        const MULTIVIEW = 1 << 40;
+        /// Enables normalized `16-bit` texture formats.
+        ///
+        /// Supported platforms:
+        /// - Vulkan
+        /// - DX12
+        /// - Metal
+        ///
+        /// This is a native only feature.
+        const TEXTURE_FORMAT_16BIT_NORM = 1 << 41;
     }
 }
 
@@ -609,7 +634,7 @@ pub struct Limits {
     pub max_storage_textures_per_shader_stage: u32,
     /// Amount of uniform buffers visible in a single shader stage. Defaults to 12. Higher is "better".
     pub max_uniform_buffers_per_shader_stage: u32,
-    /// Maximum size in bytes of a binding to a uniform buffer. Defaults to 16384. Higher is "better".
+    /// Maximum size in bytes of a binding to a uniform buffer. Defaults to 64 KB. Higher is "better".
     pub max_uniform_buffer_binding_size: u32,
     /// Maximum size in bytes of a binding to a storage buffer. Defaults to 128 MB. Higher is "better".
     pub max_storage_buffer_binding_size: u32,
@@ -641,6 +666,25 @@ pub struct Limits {
     /// when creating a `BindGroup`, or for `set_bind_group` `dynamicOffsets`.
     /// Defaults to 256. Lower is "better".
     pub min_storage_buffer_offset_alignment: u32,
+    /// Maximum allowed number of components (scalars) of input or output locations for
+    /// inter-stage communication (vertex outputs to fragment inputs).
+    pub max_inter_stage_shader_components: u32,
+    /// Maximum number of bytes used for workgroup memory in a compute entry point.
+    pub max_compute_workgroup_storage_size: u32,
+    /// Maximum value of the product of the `workgroup_size` dimensions for a compute entry-point.
+    pub max_compute_invocations_per_workgroup: u32,
+    /// The maximum value of the workgroup_size X dimension for a compute stage `ShaderModule` entry-point.
+    /// Defaults to 256.
+    pub max_compute_workgroup_size_x: u32,
+    /// The maximum value of the workgroup_size Y dimension for a compute stage `ShaderModule` entry-point.
+    /// Defaults to 256.
+    pub max_compute_workgroup_size_y: u32,
+    /// The maximum value of the workgroup_size Z dimension for a compute stage `ShaderModule` entry-point.
+    /// Defaults to 256.
+    pub max_compute_workgroup_size_z: u32,
+    /// The maximum value for each dimension of a `ComputePass::dispatch(x, y, z)` operation.
+    /// Defaults to 65535.
+    pub max_compute_workgroups_per_dimension: u32,
 }
 
 impl Default for Limits {
@@ -658,7 +702,7 @@ impl Default for Limits {
             max_storage_buffers_per_shader_stage: 8,
             max_storage_textures_per_shader_stage: 8,
             max_uniform_buffers_per_shader_stage: 12,
-            max_uniform_buffer_binding_size: 16384,
+            max_uniform_buffer_binding_size: 64 << 10,
             max_storage_buffer_binding_size: 128 << 20,
             max_vertex_buffers: 8,
             max_vertex_attributes: 16,
@@ -666,12 +710,19 @@ impl Default for Limits {
             max_push_constant_size: 0,
             min_uniform_buffer_offset_alignment: 256,
             min_storage_buffer_offset_alignment: 256,
+            max_inter_stage_shader_components: 60,
+            max_compute_workgroup_storage_size: 16352,
+            max_compute_invocations_per_workgroup: 256,
+            max_compute_workgroup_size_x: 256,
+            max_compute_workgroup_size_y: 256,
+            max_compute_workgroup_size_z: 64,
+            max_compute_workgroups_per_dimension: 65535,
         }
     }
 }
 
 impl Limits {
-    /// These default limits are guarenteed to be compatible with GLES3, and D3D11
+    /// These default limits are guarenteed to be compatible with GLES-3.1, and D3D11
     pub fn downlevel_defaults() -> Self {
         Self {
             max_texture_dimension_1d: 2048,
@@ -686,7 +737,7 @@ impl Limits {
             max_storage_buffers_per_shader_stage: 4,
             max_storage_textures_per_shader_stage: 4,
             max_uniform_buffers_per_shader_stage: 12,
-            max_uniform_buffer_binding_size: 16384,
+            max_uniform_buffer_binding_size: 16 << 10,
             max_storage_buffer_binding_size: 128 << 20,
             max_vertex_buffers: 8,
             max_vertex_attributes: 16,
@@ -694,27 +745,35 @@ impl Limits {
             max_push_constant_size: 0,
             min_uniform_buffer_offset_alignment: 256,
             min_storage_buffer_offset_alignment: 256,
+            max_inter_stage_shader_components: 60,
+            max_compute_workgroup_storage_size: 16352,
+            max_compute_invocations_per_workgroup: 256,
+            max_compute_workgroup_size_x: 256,
+            max_compute_workgroup_size_y: 256,
+            max_compute_workgroup_size_z: 64,
+            max_compute_workgroups_per_dimension: 65535,
         }
     }
 
-    /// These default limits are guarenteed to be compatible with GLES3, and D3D11, and WebGL2
+    /// These default limits are guarenteed to be compatible with GLES-3.0, and D3D11, and WebGL2
     pub fn downlevel_webgl2_defaults() -> Self {
-        #[cfg(target_arch = "wasm32")]
-        let defaults = Self {
+        Self {
+            max_uniform_buffers_per_shader_stage: 11,
             max_storage_buffers_per_shader_stage: 0,
             max_storage_textures_per_shader_stage: 0,
             max_dynamic_storage_buffers_per_pipeline_layout: 0,
             max_storage_buffer_binding_size: 0,
             max_vertex_buffer_array_stride: 255,
+            max_compute_workgroup_storage_size: 0,
+            max_compute_invocations_per_workgroup: 0,
+            max_compute_workgroup_size_x: 0,
+            max_compute_workgroup_size_y: 0,
+            max_compute_workgroup_size_z: 0,
+            max_compute_workgroups_per_dimension: 0,
 
             // Most of the values should be the same as the downlevel defaults
             ..Self::downlevel_defaults()
-        };
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let defaults = Self::downlevel_defaults();
-
-        defaults
+        }
     }
 
     /// Modify the current limits to use the resolution limits of the other.
@@ -1294,11 +1353,11 @@ pub struct PrimitiveState {
     /// The face culling mode.
     #[cfg_attr(feature = "serde", serde(default))]
     pub cull_mode: Option<Face>,
-    /// If set to true, the polygon depth is clamped to 0-1 range instead of being clipped.
+    /// If set to true, the polygon depth is not clipped to 0-1 before rasterization.
     ///
-    /// Enabling this requires `Features::DEPTH_CLAMPING` to be enabled.
+    /// Enabling this requires `Features::DEPTH_CLIP_CONTROL` to be enabled.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub clamp_depth: bool,
+    pub unclipped_depth: bool,
     /// Controls the way each polygon is rasterized. Can be either `Fill` (default), `Line` or `Point`
     ///
     /// Setting this to `Line` requires `Features::POLYGON_MODE_LINE` to be enabled.
@@ -1423,6 +1482,16 @@ pub enum TextureFormat {
     /// Red channel only. 16 bit integer per channel. Signed in shader.
     #[cfg_attr(feature = "serde", serde(rename = "r16sint"))]
     R16Sint,
+    /// Red channel only. 16 bit integer per channel. [0, 65535] converted to/from float [0, 1] in shader.
+    ///
+    /// [`Features::TEXTURE_FORMAT_16BIT_NORM`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "r16unorm"))]
+    R16Unorm,
+    /// Red channel only. 16 bit integer per channel. [0, 65535] converted to/from float [-1, 1] in shader.
+    ///
+    /// [`Features::TEXTURE_FORMAT_16BIT_NORM`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "r16snorm"))]
+    R16Snorm,
     /// Red channel only. 16 bit float per channel. Float in shader.
     #[cfg_attr(feature = "serde", serde(rename = "r16float"))]
     R16Float,
@@ -1455,6 +1524,16 @@ pub enum TextureFormat {
     /// Red and green channels. 16 bit integer per channel. Signed in shader.
     #[cfg_attr(feature = "serde", serde(rename = "rg16sint"))]
     Rg16Sint,
+    /// Red and green channels. 16 bit integer per channel. [0, 65535] converted to/from float [0, 1] in shader.
+    ///
+    /// [`Features::TEXTURE_FORMAT_16BIT_NORM`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "rg16unorm"))]
+    Rg16Unorm,
+    /// Red and green channels. 16 bit integer per channel. [0, 65535] converted to/from float [-1, 1] in shader.
+    ///
+    /// [`Features::TEXTURE_FORMAT_16BIT_NORM`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "rg16snorm"))]
+    Rg16Snorm,
     /// Red and green channels. 16 bit float per channel. Float in shader.
     #[cfg_attr(feature = "serde", serde(rename = "rg16float"))]
     Rg16Float,
@@ -1504,6 +1583,16 @@ pub enum TextureFormat {
     /// Red, green, blue, and alpha channels. 16 bit integer per channel. Signed in shader.
     #[cfg_attr(feature = "serde", serde(rename = "rgba16sint"))]
     Rgba16Sint,
+    /// Red, green, blue, and alpha channels. 16 bit integer per channel. [0, 65535] converted to/from float [0, 1] in shader.
+    ///
+    /// [`Features::TEXTURE_FORMAT_16BIT_NORM`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "rgba16unorm"))]
+    Rgba16Unorm,
+    /// Red, green, blue, and alpha. 16 bit integer per channel. [0, 65535] converted to/from float [-1, 1] in shader.
+    ///
+    /// [`Features::TEXTURE_FORMAT_16BIT_NORM`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "rgba16snorm"))]
+    Rgba16Snorm,
     /// Red, green, blue, and alpha channels. 16 bit float per channel. Float in shader.
     #[cfg_attr(feature = "serde", serde(rename = "rgba16float"))]
     Rgba16Float,
@@ -1650,191 +1739,229 @@ pub enum TextureFormat {
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ETC2`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "etc2-rgb8unorm"))]
     Etc2Rgb8Unorm,
     /// 4x4 block compressed texture. 8 bytes per block (4 bit/px). Complex pallet. 8 bit integer RGB.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ETC2`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "etc2-rgb8unorm-srgb"))]
     Etc2Rgb8UnormSrgb,
     /// 4x4 block compressed texture. 8 bytes per block (4 bit/px). Complex pallet. 8 bit integer RGB + 1 bit alpha.
     /// [0, 255] ([0, 1] for alpha) converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ETC2`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "etc2-rgb8a1unorm"))]
     Etc2Rgb8A1Unorm,
     /// 4x4 block compressed texture. 8 bytes per block (4 bit/px). Complex pallet. 8 bit integer RGB + 1 bit alpha.
     /// Srgb-color [0, 255] ([0, 1] for alpha) converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ETC2`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "etc2-rgb8a1unorm-srgb"))]
     Etc2Rgb8A1UnormSrgb,
     /// 4x4 block compressed texture. 16 bytes per block (8 bit/px). Complex pallet. 8 bit integer RGB + 8 bit alpha.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ETC2`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "etc2-rgba8unorm"))]
     Etc2Rgba8Unorm,
     /// 4x4 block compressed texture. 16 bytes per block (8 bit/px). Complex pallet. 8 bit integer RGB + 8 bit alpha.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ETC2`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "etc2-rgba8unorm-srgb"))]
     Etc2Rgba8UnormSrgb,
     /// 4x4 block compressed texture. 8 bytes per block (4 bit/px). Complex pallet. 11 bit integer R.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ETC2`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "eac-r11unorm"))]
     EacR11Unorm,
     /// 4x4 block compressed texture. 8 bytes per block (4 bit/px). Complex pallet. 11 bit integer R.
     /// [-127, 127] converted to/from float [-1, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ETC2`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "eac-r11snorm"))]
     EacR11Snorm,
     /// 4x4 block compressed texture. 16 bytes per block (8 bit/px). Complex pallet. 11 bit integer R + 11 bit integer G.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ETC2`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "eac-rg11unorm"))]
     EacRg11Unorm,
     /// 4x4 block compressed texture. 16 bytes per block (8 bit/px). Complex pallet. 11 bit integer R + 11 bit integer G.
     /// [-127, 127] converted to/from float [-1, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ETC2`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "eac-rg11snorm"))]
     EacRg11Snorm,
     /// 4x4 block compressed texture. 16 bytes per block (8 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-4x4-unorm"))]
     Astc4x4RgbaUnorm,
     /// 4x4 block compressed texture. 16 bytes per block (8 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-4x4-unorm-srgb"))]
     Astc4x4RgbaUnormSrgb,
     /// 5x4 block compressed texture. 16 bytes per block (6.4 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-5x4-unorm"))]
     Astc5x4RgbaUnorm,
     /// 5x4 block compressed texture. 16 bytes per block (6.4 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-5x4-unorm-srgb"))]
     Astc5x4RgbaUnormSrgb,
     /// 5x5 block compressed texture. 16 bytes per block (5.12 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-5x5-unorm"))]
     Astc5x5RgbaUnorm,
     /// 5x5 block compressed texture. 16 bytes per block (5.12 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-5x5-unorm-srgb"))]
     Astc5x5RgbaUnormSrgb,
     /// 6x5 block compressed texture. 16 bytes per block (4.27 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-6x5-unorm"))]
     Astc6x5RgbaUnorm,
     /// 6x5 block compressed texture. 16 bytes per block (4.27 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-6x5-unorm-srgb"))]
     Astc6x5RgbaUnormSrgb,
     /// 6x6 block compressed texture. 16 bytes per block (3.56 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-6x6-unorm"))]
     Astc6x6RgbaUnorm,
     /// 6x6 block compressed texture. 16 bytes per block (3.56 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-6x6-unorm-srgb"))]
     Astc6x6RgbaUnormSrgb,
     /// 8x5 block compressed texture. 16 bytes per block (3.2 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-8x5-unorm"))]
     Astc8x5RgbaUnorm,
     /// 8x5 block compressed texture. 16 bytes per block (3.2 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-8x5-unorm-srgb"))]
     Astc8x5RgbaUnormSrgb,
     /// 8x6 block compressed texture. 16 bytes per block (2.67 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-8x6-unorm"))]
     Astc8x6RgbaUnorm,
     /// 8x6 block compressed texture. 16 bytes per block (2.67 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-8x6-unorm-srgb"))]
     Astc8x6RgbaUnormSrgb,
     /// 10x5 block compressed texture. 16 bytes per block (2.56 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-10x5-unorm"))]
     Astc10x5RgbaUnorm,
     /// 10x5 block compressed texture. 16 bytes per block (2.56 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-10x5-unorm-srgb"))]
     Astc10x5RgbaUnormSrgb,
     /// 10x6 block compressed texture. 16 bytes per block (2.13 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-10x6-unorm"))]
     Astc10x6RgbaUnorm,
     /// 10x6 block compressed texture. 16 bytes per block (2.13 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-10x6-unorm-srgb"))]
     Astc10x6RgbaUnormSrgb,
     /// 8x8 block compressed texture. 16 bytes per block (2 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-8x8-unorm"))]
     Astc8x8RgbaUnorm,
     /// 8x8 block compressed texture. 16 bytes per block (2 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-8x8-unorm-srgb"))]
     Astc8x8RgbaUnormSrgb,
     /// 10x8 block compressed texture. 16 bytes per block (1.6 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-10x8-unorm"))]
     Astc10x8RgbaUnorm,
     /// 10x8 block compressed texture. 16 bytes per block (1.6 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-10x8-unorm-srgb"))]
     Astc10x8RgbaUnormSrgb,
     /// 10x10 block compressed texture. 16 bytes per block (1.28 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-10x10-unorm"))]
     Astc10x10RgbaUnorm,
     /// 10x10 block compressed texture. 16 bytes per block (1.28 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-10x10-unorm-srgb"))]
     Astc10x10RgbaUnormSrgb,
     /// 12x10 block compressed texture. 16 bytes per block (1.07 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-12x10-unorm"))]
     Astc12x10RgbaUnorm,
     /// 12x10 block compressed texture. 16 bytes per block (1.07 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-12x10-unorm-srgb"))]
     Astc12x10RgbaUnormSrgb,
     /// 12x12 block compressed texture. 16 bytes per block (0.89 bit/px). Complex pallet. 8 bit integer RGBA.
     /// [0, 255] converted to/from float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-12x12-unorm"))]
     Astc12x12RgbaUnorm,
     /// 12x12 block compressed texture. 16 bytes per block (0.89 bit/px). Complex pallet. 8 bit integer RGBA.
     /// Srgb-color [0, 255] converted to/from linear-color float [0, 1] in shader.
     ///
     /// [`Features::TEXTURE_COMPRESSION_ASTC_LDR`] must be enabled to use this texture format.
+    #[cfg_attr(feature = "serde", serde(rename = "astc-12x12-unorm-srgb"))]
     Astc12x12RgbaUnormSrgb,
 }
 
@@ -1846,6 +1973,7 @@ impl TextureFormat {
         let bc = Features::TEXTURE_COMPRESSION_BC;
         let etc2 = Features::TEXTURE_COMPRESSION_ETC2;
         let astc_ldr = Features::TEXTURE_COMPRESSION_ASTC_LDR;
+        let norm16bit = Features::TEXTURE_FORMAT_16BIT_NORM;
 
         // Sample Types
         let uint = TextureSampleType::Uint;
@@ -1987,6 +2115,14 @@ impl TextureFormat {
             Self::Astc12x10RgbaUnormSrgb => (astc_ldr, float, srgb, (12, 10), 16, basic, 4),
             Self::Astc12x12RgbaUnorm => (astc_ldr, float, linear, (12, 12), 16, basic, 4),
             Self::Astc12x12RgbaUnormSrgb => (astc_ldr, float, srgb, (12, 12), 16, basic, 4),
+
+            // Optional normalized 16-bit-per-channel formats
+            Self::R16Unorm => (norm16bit, float, linear, (1, 1), 2, storage, 1),
+            Self::R16Snorm => (norm16bit, float, linear, (1, 1), 2, storage, 1),
+            Self::Rg16Unorm => (norm16bit, float, linear, (1, 1), 4, storage, 2),
+            Self::Rg16Snorm => (norm16bit, float, linear, (1, 1), 4, storage, 2),
+            Self::Rgba16Unorm => (norm16bit, float, linear, (1, 1), 8, storage, 4),
+            Self::Rgba16Snorm => (norm16bit, float, linear, (1, 1), 8, storage, 4),
         };
 
         TextureFormatInfo {
@@ -2685,7 +2821,13 @@ pub struct Extent3d {
     ///
     pub height: u32,
     ///
+    #[cfg_attr(feature = "serde", serde(default = "default_depth"))]
     pub depth_or_array_layers: u32,
+}
+
+#[cfg(feature = "serde")]
+fn default_depth() -> u32 {
+    1
 }
 
 impl Default for Extent3d {
@@ -2756,6 +2898,7 @@ impl Extent3d {
     }
 
     /// Calculates the extent at a given mip level.
+    /// Does *not* account for memory size being a multiple of block size.
     pub fn mip_level_size(&self, level: u32, is_3d_texture: bool) -> Extent3d {
         Extent3d {
             width: u32::max(1, self.width >> level),
@@ -3178,6 +3321,25 @@ pub enum StorageTextureAccess {
     ReadWrite,
 }
 
+/// Specific type of a sampler binding.
+///
+/// WebGPU spec: <https://gpuweb.github.io/gpuweb/#enumdef-gpusamplerbindingtype>
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "trace", derive(Serialize))]
+#[cfg_attr(feature = "replay", derive(Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+pub enum SamplerBindingType {
+    /// The sampling result is produced based on more than a single color sample from a texture,
+    /// e.g. when bilinear interpolation is enabled.
+    Filtering,
+    /// The sampling result is produced based on a single color sample from a texture.
+    NonFiltering,
+    /// Use as a comparison sampler instead of a normal sampler.
+    /// For more info take a look at the analogous functionality in OpenGL: <https://www.khronos.org/opengl/wiki/Sampler_Object#Comparison_mode>.
+    Comparison,
+}
+
 /// Specific type of a binding.
 ///
 /// WebGPU spec: the enum of
@@ -3211,16 +3373,7 @@ pub enum BindingType {
     /// layout(binding = 0)
     /// uniform sampler s;
     /// ```
-    Sampler {
-        /// The sampling result is produced based on more than a single color sample from a texture,
-        /// e.g. when bilinear interpolation is enabled.
-        ///
-        /// A filtering sampler can only be used with a filterable texture.
-        filtering: bool,
-        /// Use as a comparison sampler instead of a normal sampler.
-        /// For more info take a look at the analogous functionality in OpenGL: <https://www.khronos.org/opengl/wiki/Sampler_Object#Comparison_mode>.
-        comparison: bool,
-    },
+    Sampler(SamplerBindingType),
     /// A texture binding.
     ///
     /// Example GLSL syntax:
@@ -3339,6 +3492,30 @@ pub struct ImageSubresourceRange {
     /// If `Some(count)`, `base_array_layer + count` must be less or equal to the underlying array count.
     /// If `None`, considered to include the rest of the array layers, but at least 1 in total.
     pub array_layer_count: Option<NonZeroU32>,
+}
+
+impl ImageSubresourceRange {
+    /// Returns the mip level range of a subresource range describes for a specific texture.
+    pub fn mip_range<L>(&self, texture_desc: &TextureDescriptor<L>) -> Range<u32> {
+        self.base_mip_level..match self.mip_level_count {
+            Some(mip_level_count) => self.base_mip_level + mip_level_count.get(),
+            None => texture_desc.mip_level_count,
+        }
+    }
+
+    /// Returns the layer range of a subresource range describes for a specific texture.
+    pub fn layer_range<L>(&self, texture_desc: &TextureDescriptor<L>) -> Range<u32> {
+        self.base_array_layer..match self.array_layer_count {
+            Some(array_layer_count) => self.base_array_layer + array_layer_count.get(),
+            None => {
+                if texture_desc.dimension == TextureDimension::D3 {
+                    self.base_array_layer + 1
+                } else {
+                    texture_desc.size.depth_or_array_layers
+                }
+            }
+        }
+    }
 }
 
 /// Color variation to use when sampler addressing mode is [`AddressMode::ClampToBorder`]

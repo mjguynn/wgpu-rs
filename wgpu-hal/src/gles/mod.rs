@@ -210,13 +210,13 @@ pub struct Queue {
     current_index_buffer: Option<glow::Buffer>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Buffer {
-    raw: glow::Buffer,
+    raw: Option<glow::Buffer>,
     target: BindTarget,
     size: wgt::BufferAddress,
     map_flags: u32,
-    emulate_map_allocation: std::sync::Mutex<Option<Vec<u8>>>,
+    data: Option<Arc<std::sync::Mutex<Vec<u8>>>>,
 }
 
 // Safe: WASM doesn't have threads
@@ -529,7 +529,7 @@ struct StencilState {
 struct PrimitiveState {
     front_face: u32,
     cull_face: u32,
-    clamp_depth: bool,
+    unclipped_depth: bool,
 }
 
 type InvalidatedAttachments = ArrayVec<u32, { crate::MAX_COLOR_TARGETS + 2 }>;
@@ -567,14 +567,14 @@ enum Command {
         indirect_offset: wgt::BufferAddress,
     },
     ClearBuffer {
-        dst: glow::Buffer,
+        dst: Buffer,
         dst_target: BindTarget,
         range: crate::MemoryRange,
     },
     CopyBufferToBuffer {
-        src: glow::Buffer,
+        src: Buffer,
         src_target: BindTarget,
-        dst: glow::Buffer,
+        dst: Buffer,
         dst_target: BindTarget,
         copy: crate::BufferCopy,
     },
@@ -586,7 +586,7 @@ enum Command {
         copy: crate::TextureCopy,
     },
     CopyBufferToTexture {
-        src: glow::Buffer,
+        src: Buffer,
         #[allow(unused)]
         src_target: BindTarget,
         dst: glow::Texture,
@@ -598,7 +598,7 @@ enum Command {
         src: glow::Texture,
         src_target: BindTarget,
         src_format: wgt::TextureFormat,
-        dst: glow::Buffer,
+        dst: Buffer,
         #[allow(unused)]
         dst_target: BindTarget,
         copy: crate::BufferTextureCopy,
@@ -608,7 +608,7 @@ enum Command {
     EndQuery(BindTarget),
     CopyQueryResults {
         query_range: Range<u32>,
-        dst: glow::Buffer,
+        dst: Buffer,
         dst_target: BindTarget,
         dst_offset: wgt::BufferAddress,
     },
@@ -679,7 +679,7 @@ enum Command {
         offset: i32,
         size: i32,
     },
-    BindSampler(u32, glow::Sampler),
+    BindSampler(u32, Option<glow::Sampler>),
     BindTexture {
         slot: u32,
         texture: glow::Texture,

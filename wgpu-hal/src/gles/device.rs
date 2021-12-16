@@ -1,7 +1,11 @@
 use super::conv;
 use crate::auxil::map_naga_stage;
 use glow::HasContext;
-use std::{convert::TryInto, iter, ptr, sync::Arc};
+use std::{
+    convert::TryInto,
+    iter, ptr,
+    sync::{Arc, Mutex},
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::mem;
@@ -314,6 +318,31 @@ impl crate::Device<super::Api> for super::Device {
         &self,
         desc: &crate::BufferDescriptor,
     ) -> Result<super::Buffer, crate::DeviceError> {
+        let target = if desc.usage.contains(crate::BufferUses::INDEX) {
+            glow::ELEMENT_ARRAY_BUFFER
+        } else {
+            glow::ARRAY_BUFFER
+        };
+
+        let emulate_map = self
+            .shared
+            .workarounds
+            .contains(super::Workarounds::EMULATE_BUFFER_MAP)
+            || !self
+                .shared
+                .private_caps
+                .contains(super::PrivateCapabilities::BUFFER_ALLOCATION);
+
+        if emulate_map && desc.usage.intersects(crate::BufferUses::MAP_WRITE) {
+            return Ok(super::Buffer {
+                raw: None,
+                target,
+                size: desc.size,
+                map_flags: 0,
+                data: Some(Arc::new(Mutex::new(vec![0; desc.size as usize]))),
+            });
+        }
+
         let gl = &self.shared.context.lock();
 
         let target = if desc.usage.contains(crate::BufferUses::INDEX) {
@@ -337,8 +366,8 @@ impl crate::Device<super::Api> for super::Device {
             map_flags |= glow::MAP_WRITE_BIT;
         }
 
-        let raw = gl.create_buffer().unwrap();
-        gl.bind_buffer(target, Some(raw));
+        let raw = Some(gl.create_buffer().unwrap());
+        gl.bind_buffer(target, raw);
         let raw_size = desc
             .size
             .try_into()
@@ -384,17 +413,25 @@ impl crate::Device<super::Api> for super::Device {
             }
         }
 
+        let data = if emulate_map && desc.usage.contains(crate::BufferUses::MAP_READ) {
+            Some(Arc::new(Mutex::new(vec![0; desc.size as usize])))
+        } else {
+            None
+        };
+
         Ok(super::Buffer {
             raw,
             target,
             size: desc.size,
             map_flags,
-            emulate_map_allocation: Default::default(),
+            data,
         })
     }
     unsafe fn destroy_buffer(&self, buffer: super::Buffer) {
-        let gl = &self.shared.context.lock();
-        gl.delete_buffer(buffer.raw);
+        if let Some(raw) = buffer.raw {
+            let gl = &self.shared.context.lock();
+            gl.delete_buffer(raw);
+        }
     }
 
     unsafe fn map_buffer(
@@ -402,62 +439,61 @@ impl crate::Device<super::Api> for super::Device {
         buffer: &super::Buffer,
         range: crate::MemoryRange,
     ) -> Result<crate::BufferMapping, crate::DeviceError> {
-        let gl = &self.shared.context.lock();
-
         let is_coherent = buffer.map_flags & glow::MAP_COHERENT_BIT != 0;
-
-        let ptr = if self
-            .shared
-            .workarounds
-            .contains(super::Workarounds::EMULATE_BUFFER_MAP)
-        {
-            let mut buf = vec![0; buffer.size as usize];
-            let ptr = buf.as_mut_ptr();
-            *buffer.emulate_map_allocation.lock().unwrap() = Some(buf);
-
-            ptr
-        } else {
-            gl.bind_buffer(buffer.target, Some(buffer.raw));
-            let ptr = gl.map_buffer_range(
-                buffer.target,
-                range.start as i32,
-                (range.end - range.start) as i32,
-                buffer.map_flags,
-            );
-            gl.bind_buffer(buffer.target, None);
-
-            ptr
+        let ptr = match buffer.raw {
+            None => {
+                let mut vec = buffer.data.as_ref().unwrap().lock().unwrap();
+                let slice = &mut vec.as_mut_slice()[range.start as usize..range.end as usize];
+                slice.as_mut_ptr()
+            }
+            Some(raw) => {
+                let gl = &self.shared.context.lock();
+                gl.bind_buffer(buffer.target, Some(raw));
+                let ptr = if let Some(ref map_read_allocation) = buffer.data {
+                    let mut guard = map_read_allocation.lock().unwrap();
+                    let slice = guard.as_mut_slice();
+                    gl.get_buffer_sub_data(buffer.target, 0, slice);
+                    slice.as_mut_ptr()
+                } else {
+                    gl.map_buffer_range(
+                        buffer.target,
+                        range.start as i32,
+                        (range.end - range.start) as i32,
+                        buffer.map_flags,
+                    )
+                };
+                gl.bind_buffer(buffer.target, None);
+                ptr
+            }
         };
-
         Ok(crate::BufferMapping {
             ptr: ptr::NonNull::new(ptr).ok_or(crate::DeviceError::Lost)?,
             is_coherent,
         })
     }
     unsafe fn unmap_buffer(&self, buffer: &super::Buffer) -> Result<(), crate::DeviceError> {
-        let gl = &self.shared.context.lock();
-        gl.bind_buffer(buffer.target, Some(buffer.raw));
-
-        if let Some(buf) = buffer.emulate_map_allocation.lock().unwrap().take() {
-            gl.buffer_sub_data_u8_slice(buffer.target, 0, &buf);
-            drop(buf);
-        } else {
-            gl.unmap_buffer(buffer.target);
+        if let Some(raw) = buffer.raw {
+            if !self
+                .shared
+                .workarounds
+                .contains(super::Workarounds::EMULATE_BUFFER_MAP)
+            {
+                let gl = &self.shared.context.lock();
+                gl.bind_buffer(buffer.target, Some(raw));
+                gl.unmap_buffer(buffer.target);
+                gl.bind_buffer(buffer.target, None);
+            }
         }
-
-        gl.bind_buffer(buffer.target, None);
         Ok(())
     }
     unsafe fn flush_mapped_ranges<I>(&self, buffer: &super::Buffer, ranges: I)
     where
         I: Iterator<Item = crate::MemoryRange>,
     {
-        let gl = &self.shared.context.lock();
-        gl.bind_buffer(buffer.target, Some(buffer.raw));
-        for range in ranges {
-            if let Some(buf) = buffer.emulate_map_allocation.lock().unwrap().as_ref() {
-                gl.buffer_sub_data_u8_slice(buffer.target, range.start as i32, buf);
-            } else {
+        if let Some(raw) = buffer.raw {
+            let gl = &self.shared.context.lock();
+            gl.bind_buffer(buffer.target, Some(raw));
+            for range in ranges {
                 gl.flush_mapped_buffer_range(
                     buffer.target,
                     range.start as i32,
@@ -521,82 +557,34 @@ impl crate::Device<super::Api> for super::Device {
             super::TextureInner::Renderbuffer { raw }
         } else {
             let raw = gl.create_texture().unwrap();
-            //HACK: detect a cube map
-            let cube_count = if desc.size.width == desc.size.height
-                && desc.size.depth_or_array_layers % 6 == 0
-            {
-                Some(desc.size.depth_or_array_layers / 6)
-            } else {
-                None
-            };
-            let target = match desc.dimension {
+            let (target, is_3d) = match desc.dimension {
                 wgt::TextureDimension::D1 | wgt::TextureDimension::D2 => {
-                    if desc.sample_count > 1 {
-                        let target = glow::TEXTURE_2D;
-                        gl.bind_texture(target, Some(raw));
-                        gl.tex_storage_2d_multisample(
-                            target,
-                            desc.sample_count as i32,
-                            format_desc.internal,
-                            desc.size.width as i32,
-                            desc.size.height as i32,
-                            true,
-                        );
-                        target
-                    } else if desc.size.depth_or_array_layers > 1 && cube_count != Some(1) {
-                        let target = match cube_count {
-                            Some(_) => glow::TEXTURE_CUBE_MAP_ARRAY,
-                            None => glow::TEXTURE_2D_ARRAY,
+                    if desc.size.depth_or_array_layers > 1 {
+                        //HACK: detect a cube map
+                        let cube_count = if desc.size.width == desc.size.height
+                            && desc.size.depth_or_array_layers % 6 == 0
+                        {
+                            Some(desc.size.depth_or_array_layers / 6)
+                        } else {
+                            None
                         };
-                        gl.bind_texture(target, Some(raw));
-                        gl.tex_storage_3d(
-                            target,
-                            desc.mip_level_count as i32,
-                            format_desc.internal,
-                            desc.size.width as i32,
-                            desc.size.height as i32,
-                            desc.size.depth_or_array_layers as i32,
-                        );
-                        target
+                        match cube_count {
+                            None => (glow::TEXTURE_2D_ARRAY, true),
+                            Some(1) => (glow::TEXTURE_CUBE_MAP, false),
+                            Some(_) => (glow::TEXTURE_CUBE_MAP_ARRAY, true),
+                        }
                     } else {
-                        let target = match cube_count {
-                            Some(_) => glow::TEXTURE_CUBE_MAP,
-                            None => glow::TEXTURE_2D,
-                        };
-                        gl.bind_texture(target, Some(raw));
-                        gl.tex_storage_2d(
-                            target,
-                            desc.mip_level_count as i32,
-                            format_desc.internal,
-                            desc.size.width as i32,
-                            desc.size.height as i32,
-                        );
-                        target
+                        (glow::TEXTURE_2D, false)
                     }
                 }
                 wgt::TextureDimension::D3 => {
                     copy_size.depth = desc.size.depth_or_array_layers;
-                    let target = glow::TEXTURE_3D;
-                    gl.bind_texture(target, Some(raw));
-                    gl.tex_storage_3d(
-                        target,
-                        desc.mip_level_count as i32,
-                        format_desc.internal,
-                        desc.size.width as i32,
-                        desc.size.height as i32,
-                        desc.size.depth_or_array_layers as i32,
-                    );
-                    target
+                    (glow::TEXTURE_3D, true)
                 }
             };
 
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(label) = desc.label {
-                if gl.supports_debug() {
-                    gl.object_label(glow::TEXTURE, mem::transmute(raw), Some(label));
-                }
-            }
-
+            gl.bind_texture(target, Some(raw));
+            //Note: this has to be done before defining the storage!
             match desc.format.describe().sample_type {
                 wgt::TextureSampleType::Float { filterable: false }
                 | wgt::TextureSampleType::Uint
@@ -607,6 +595,41 @@ impl crate::Device<super::Api> for super::Device {
                 }
                 wgt::TextureSampleType::Float { filterable: true }
                 | wgt::TextureSampleType::Depth => {}
+            }
+
+            if is_3d {
+                gl.tex_storage_3d(
+                    target,
+                    desc.mip_level_count as i32,
+                    format_desc.internal,
+                    desc.size.width as i32,
+                    desc.size.height as i32,
+                    desc.size.depth_or_array_layers as i32,
+                );
+            } else if desc.sample_count > 1 {
+                gl.tex_storage_2d_multisample(
+                    target,
+                    desc.sample_count as i32,
+                    format_desc.internal,
+                    desc.size.width as i32,
+                    desc.size.height as i32,
+                    true,
+                );
+            } else {
+                gl.tex_storage_2d(
+                    target,
+                    desc.mip_level_count as i32,
+                    format_desc.internal,
+                    desc.size.width as i32,
+                    desc.size.height as i32,
+                );
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(label) = desc.label {
+                if gl.supports_debug() {
+                    gl.object_label(glow::TEXTURE, mem::transmute(raw), Some(label));
+                }
             }
 
             gl.bind_texture(target, None);
@@ -847,7 +870,7 @@ impl crate::Device<super::Api> for super::Device {
                 wgt::BindingType::Buffer { .. } => {
                     let bb = &desc.buffers[entry.resource_index as usize];
                     super::RawBinding::Buffer {
-                        raw: bb.buffer.raw,
+                        raw: bb.buffer.raw.unwrap(),
                         offset: bb.offset as i32,
                         size: match bb.size {
                             Some(s) => s.get() as i32,
@@ -1079,15 +1102,25 @@ impl crate::Device<super::Api> for super::Device {
         wait_value: crate::FenceValue,
         timeout_ms: u32,
     ) -> Result<bool, crate::DeviceError> {
-        if cfg!(not(target_arch = "wasm32")) && fence.last_completed < wait_value {
+        if fence.last_completed < wait_value {
             let gl = &self.shared.context.lock();
-            let timeout_ns = (timeout_ms as u64 * 1_000_000).min(!0u32 as u64);
+            let timeout_ns = if cfg!(target_arch = "wasm32") {
+                0
+            } else {
+                (timeout_ms as u64 * 1_000_000).min(!0u32 as u64)
+            };
             let &(_, sync) = fence
                 .pending
                 .iter()
                 .find(|&&(value, _)| value >= wait_value)
                 .unwrap();
             match gl.client_wait_sync(sync, glow::SYNC_FLUSH_COMMANDS_BIT, timeout_ns as i32) {
+                // for some reason firefox returns WAIT_FAILED, to investigate
+                #[cfg(target_arch = "wasm32")]
+                glow::WAIT_FAILED => {
+                    log::warn!("wait failed!");
+                    Ok(false)
+                }
                 glow::TIMEOUT_EXPIRED => Ok(false),
                 glow::CONDITION_SATISFIED | glow::ALREADY_SIGNALED => Ok(true),
                 _ => Err(crate::DeviceError::Lost),

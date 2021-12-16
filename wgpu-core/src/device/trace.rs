@@ -27,6 +27,7 @@ pub(crate) fn new_render_bundle_encoder_descriptor<'a>(
             }
         }),
         sample_count: context.sample_count,
+        multiview: context.multiview,
     }
 }
 
@@ -167,6 +168,9 @@ pub enum Command {
         destination: id::BufferId,
         destination_offset: wgt::BufferAddress,
     },
+    PushDebugGroup(String),
+    PopDebugGroup,
+    InsertDebugMarker(String),
     RunComputePass {
         base: crate::command::BasePass<crate::command::ComputeCommand>,
     },

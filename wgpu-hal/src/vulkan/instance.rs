@@ -1,7 +1,6 @@
 use std::{
-    cmp,
     ffi::{c_void, CStr, CString},
-    mem, slice,
+    slice,
     sync::Arc,
     thread,
 };
@@ -25,10 +24,10 @@ unsafe extern "system" fn debug_utils_messenger_callback(
     }
 
     let level = match message_severity {
-        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => log::Level::Error,
-        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::Level::Warn,
+        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => log::Level::Debug,
         vk::DebugUtilsMessageSeverityFlagsEXT::INFO => log::Level::Info,
-        vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => log::Level::Trace,
+        vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => log::Level::Warn,
+        vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => log::Level::Error,
         _ => log::Level::Warn,
     };
 
@@ -121,7 +120,6 @@ impl super::Swapchain {
 impl super::Instance {
     pub fn required_extensions(
         entry: &ash::Entry,
-        driver_api_version: u32,
         flags: crate::InstanceFlags,
     ) -> Result<Vec<&'static CStr>, crate::InstanceError> {
         let instance_extensions = entry
@@ -161,11 +159,6 @@ impl super::Instance {
 
         extensions.push(vk::KhrGetPhysicalDeviceProperties2Fn::name());
 
-        // VK_KHR_storage_buffer_storage_class required for `Naga` on Vulkan 1.0 devices
-        if driver_api_version == vk::API_VERSION_1_0 {
-            extensions.push(vk::KhrStorageBufferStorageClassFn::name());
-        }
-
         // Only keep available extensions.
         extensions.retain(|&ext| {
             if instance_extensions
@@ -196,18 +189,25 @@ impl super::Instance {
         has_nv_optimus: bool,
         drop_guard: Option<super::DropGuard>,
     ) -> Result<Self, crate::InstanceError> {
-        if driver_api_version == vk::API_VERSION_1_0
-            && !extensions.contains(&vk::KhrStorageBufferStorageClassFn::name())
-        {
-            log::warn!("Required VK_KHR_storage_buffer_storage_class extension is not supported");
-            return Err(crate::InstanceError);
-        }
+        log::info!("Instance version: 0x{:x}", driver_api_version);
 
         let debug_utils = if extensions.contains(&ext::DebugUtils::name()) {
+            log::info!("Enabling debug utils");
             let extension = ext::DebugUtils::new(&entry, &raw_instance);
+            // having ERROR unconditionally because Vk doesn't like empty flags
+            let mut severity = vk::DebugUtilsMessageSeverityFlagsEXT::ERROR;
+            if log::max_level() >= log::LevelFilter::Debug {
+                severity |= vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE;
+            }
+            if log::max_level() >= log::LevelFilter::Info {
+                severity |= vk::DebugUtilsMessageSeverityFlagsEXT::INFO;
+            }
+            if log::max_level() >= log::LevelFilter::Warn {
+                severity |= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING;
+            }
             let vk_info = vk::DebugUtilsMessengerCreateInfoEXT::builder()
                 .flags(vk::DebugUtilsMessengerCreateFlagsEXT::empty())
-                .message_severity(vk::DebugUtilsMessageSeverityFlagsEXT::all())
+                .message_severity(severity)
                 .message_type(vk::DebugUtilsMessageTypeFlagsEXT::all())
                 .pfn_user_callback(Some(debug_utils_messenger_callback));
             let messenger = extension
@@ -221,16 +221,19 @@ impl super::Instance {
             None
         };
 
-        let get_physical_device_properties = extensions
-            .iter()
-            .find(|&&ext| ext == vk::KhrGetPhysicalDeviceProperties2Fn::name())
-            .map(|_| {
-                vk::KhrGetPhysicalDeviceProperties2Fn::load(|name| {
-                    mem::transmute(
-                        entry.get_instance_proc_addr(raw_instance.handle(), name.as_ptr()),
-                    )
-                })
-            });
+        // We can't use any of Vulkan-1.1+ abilities on Vk 1.0 instance,
+        // so disabling this query helps.
+        let get_physical_device_properties = if driver_api_version >= vk::API_VERSION_1_1
+            && extensions.contains(&khr::GetPhysicalDeviceProperties2::name())
+        {
+            log::info!("Enabling device properties2");
+            Some(khr::GetPhysicalDeviceProperties2::new(
+                &entry,
+                &raw_instance,
+            ))
+        } else {
+            None
+        };
 
         Ok(Self {
             shared: Arc::new(super::InstanceShared {
@@ -458,9 +461,11 @@ impl crate::Instance<super::Api> for super::Instance {
             .application_version(1)
             .engine_name(CStr::from_bytes_with_nul(b"wgpu-hal\0").unwrap())
             .engine_version(2)
-            .api_version({
-                // Pick the latest API version available, but don't go later than the SDK version used by `gfx_backend_vulkan`.
-                cmp::min(driver_api_version, {
+            .api_version(
+                // Vulkan 1.0 doesn't like anything but 1.0 passed in here...
+                if driver_api_version < vk::API_VERSION_1_1 {
+                    vk::API_VERSION_1_0
+                } else {
                     // This is the max Vulkan API version supported by `wgpu-hal`.
                     //
                     // If we want to increment this, there are some things that must be done first:
@@ -470,10 +475,10 @@ impl crate::Instance<super::Api> for super::Instance {
                     //    - If any were obsoleted in the new API version, we must implement a fallback for the new API version
                     //    - If any are non-KHR-vendored, we must ensure the new behavior is still correct (since backwards-compatibility is not guaranteed).
                     vk::HEADER_VERSION_COMPLETE
-                })
-            });
+                },
+            );
 
-        let extensions = Self::required_extensions(&entry, driver_api_version, desc.flags)?;
+        let extensions = Self::required_extensions(&entry, desc.flags)?;
 
         let instance_layers = entry.enumerate_instance_layer_properties().map_err(|e| {
             log::info!("enumerate_instance_layer_properties: {:?}", e);
@@ -547,55 +552,40 @@ impl crate::Instance<super::Api> for super::Instance {
         use raw_window_handle::RawWindowHandle;
 
         match has_handle.raw_window_handle() {
-            #[cfg(all(
-                unix,
-                not(target_os = "android"),
-                not(target_os = "macos"),
-                not(target_os = "ios"),
-                not(target_os = "solaris")
-            ))]
             RawWindowHandle::Wayland(handle)
                 if self.extensions.contains(&khr::WaylandSurface::name()) =>
             {
                 Ok(self.create_surface_from_wayland(handle.display, handle.surface))
             }
-            #[cfg(all(
-                unix,
-                not(target_os = "android"),
-                not(target_os = "macos"),
-                not(target_os = "ios"),
-                not(target_os = "solaris")
-            ))]
             RawWindowHandle::Xlib(handle)
                 if self.extensions.contains(&khr::XlibSurface::name()) =>
             {
                 Ok(self.create_surface_from_xlib(handle.display as *mut _, handle.window))
             }
-            #[cfg(all(
-                unix,
-                not(target_os = "android"),
-                not(target_os = "macos"),
-                not(target_os = "ios")
-            ))]
             RawWindowHandle::Xcb(handle) if self.extensions.contains(&khr::XcbSurface::name()) => {
                 Ok(self.create_surface_from_xcb(handle.connection, handle.window))
             }
-            #[cfg(target_os = "android")]
-            RawWindowHandle::Android(handle) => {
+            RawWindowHandle::AndroidNdk(handle) => {
                 Ok(self.create_surface_android(handle.a_native_window))
             }
             #[cfg(windows)]
-            RawWindowHandle::Windows(handle) => {
+            RawWindowHandle::Win32(handle) => {
                 use winapi::um::libloaderapi::GetModuleHandleW;
 
                 let hinstance = GetModuleHandleW(std::ptr::null());
                 Ok(self.create_surface_from_hwnd(hinstance as *mut _, handle.hwnd))
             }
             #[cfg(target_os = "macos")]
-            RawWindowHandle::MacOS(handle)
+            RawWindowHandle::AppKit(handle)
                 if self.extensions.contains(&ext::MetalSurface::name()) =>
             {
                 Ok(self.create_surface_from_ns_view(handle.ns_view))
+            }
+            #[cfg(target_os = "ios")]
+            RawWindowHandle::UiKit(handle)
+                if self.extensions.contains(&ext::MetalSurface::name()) =>
+            {
+                Ok(self.create_surface_from_ns_view(handle.ui_view))
             }
             _ => Err(crate::InstanceError),
         }
@@ -606,6 +596,8 @@ impl crate::Instance<super::Api> for super::Instance {
     }
 
     unsafe fn enumerate_adapters(&self) -> Vec<crate::ExposedAdapter<super::Api>> {
+        use crate::auxil::db;
+
         let raw_devices = match self.shared.raw.enumerate_physical_devices() {
             Ok(devices) => devices,
             Err(err) => {
@@ -620,8 +612,11 @@ impl crate::Instance<super::Api> for super::Instance {
             .collect::<Vec<_>>();
 
         // Detect if it's an Intel + NVidia configuration with Optimus
-        if cfg!(target_os = "linux") && self.shared.has_nv_optimus {
-            use crate::auxil::db;
+        let has_nvidia_dgpu = exposed_adapters.iter().any(|exposed| {
+            exposed.info.device_type == wgt::DeviceType::DiscreteGpu
+                && exposed.info.vendor == db::nvidia::VENDOR as usize
+        });
+        if cfg!(target_os = "linux") && has_nvidia_dgpu && self.shared.has_nv_optimus {
             for exposed in exposed_adapters.iter_mut() {
                 if exposed.info.device_type == wgt::DeviceType::IntegratedGpu
                     && exposed.info.vendor == db::intel::VENDOR as usize

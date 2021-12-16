@@ -29,6 +29,12 @@ The following binaries:
 
 For an overview of all the components in the gfx-rs ecosystem, see [the big picture](./etc/big-picture.png).
 
+### MSRV policy
+
+Minimum Supported Rust Version is **1.53**.
+It is enforced on CI (in "/.github/workflows/ci.txt") with `RUST_VERSION` variable.
+This version can only be upgraded in breaking releases.
+
 ## Getting Started
 
 ### Rust
@@ -60,15 +66,26 @@ We have a [wiki](https://github.com/gfx-rs/wgpu/wiki) that serves as a knowledge
 
 ## Supported Platforms
 
-   API   |    Windows                    |  Linux & Android   |    macOS & iOS     |
-  -----  | ----------------------------- | ------------------ | ------------------ |
-  Vulkan | :white_check_mark:            | :white_check_mark: |                    |
-  Metal  |                               |                    | :white_check_mark: |
-  DX12   | :white_check_mark: (W10 only) |                    |                    |
-  DX11   | :construction:                |                    |                    |
-  GLES3  |                               | :ok:               |                    |
+   API   |    Windows                    |  Linux & Android          |    macOS & iOS      |
+  -----  | ----------------------------- | ------------------------- | ------------------- |
+  Vulkan | :white_check_mark:            | :white_check_mark:        |                     |
+  Metal  |                               |                           | :white_check_mark:  |
+  DX12   | :white_check_mark: (W10 only) |                           |                     |
+  DX11   | :hammer_and_wrench:           |                           |                     |
+  GLES3  |                               | :ok:                      |                     |
+  Angle  | :ok:                          | :ok:                      | :hammer_and_wrench: |
 
-:white_check_mark: = First Class Support — :ok: = Best Effort Support — :construction: = Unsupported, but support in progress
+:white_check_mark: = First Class Support — :ok: = Best Effort Support — :hammer_and_wrench: = Unsupported, but support in progress
+
+### Angle
+
+[Angle](http://angleproject.org) is a translation layer from GLES to other backends, developed by Google.
+We support running our GLES3 backend over it in order to reach platforms with GLES2 or DX11 support, which aren't accessible otherwise.
+In order to run with Angle, "angle" feature has to be enabled, and Angle libraries placed in a location visible to the application.
+These binaries can be downloaded from [gfbuild-angle](https://github.com/DileSoft/gfbuild-angle) artifacts.
+
+On Windows, you generally need to copy them into the working directory, or in the same directory as the executable.
+On Linux, you can point to them using `LD_LIBRARY_PATH` environment.
 
 ## Environment Variables
 
@@ -139,7 +156,7 @@ To run a given set of tests:
 
 ```
 # Must be inside the cts folder we just checked out, else this will fail
-cargo run --manifest-path ../cts_runner/Cargo.toml --frozen -- ./tools/run_deno --verbose "<test string>"
+cargo run --manifest-path ../cts_runner/Cargo.toml -- ./tools/run_deno --verbose "<test string>"
 ```
 
 To find the full list of tests, go to the [online cts viewer](https://gpuweb.github.io/cts/standalone/?runnow=0&worker=0&debug=0&q=webgpu:*).
