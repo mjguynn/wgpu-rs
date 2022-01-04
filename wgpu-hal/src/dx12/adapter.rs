@@ -98,7 +98,7 @@ impl super::Adapter {
             device_type: if (desc.Flags & dxgi::DXGI_ADAPTER_FLAG_SOFTWARE) != 0 {
                 workarounds.avoid_cpu_descriptor_overwrites = true;
                 wgt::DeviceType::Cpu
-            } else if features_architecture.CacheCoherentUMA != 0 {
+            } else if features_architecture.UMA != 0 {
                 wgt::DeviceType::IntegratedGpu
             } else {
                 wgt::DeviceType::DiscreteGpu
@@ -186,7 +186,7 @@ impl super::Adapter {
             | wgt::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | wgt::Features::TIMESTAMP_QUERY
             | wgt::Features::TEXTURE_COMPRESSION_BC
-            | wgt::Features::CLEAR_COMMANDS
+            | wgt::Features::CLEAR_TEXTURE
             | wgt::Features::TEXTURE_FORMAT_16BIT_NORM;
         //TODO: in order to expose this, we need to run a compute shader
         // that extract the necessary statistics out of the D3D12 result.

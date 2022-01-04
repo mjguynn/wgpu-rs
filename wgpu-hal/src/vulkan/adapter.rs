@@ -332,7 +332,7 @@ impl PhysicalDeviceFeatures {
             | F::TIMESTAMP_QUERY
             | F::PIPELINE_STATISTICS_QUERY
             | F::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
-            | F::CLEAR_COMMANDS;
+            | F::CLEAR_TEXTURE;
         let mut dl_flags = Df::all();
 
         dl_flags.set(Df::CUBE_ARRAY_TEXTURES, self.core.image_cube_array != 0);
@@ -1116,8 +1116,8 @@ impl super::Adapter {
         let timeline_semaphore_fn = if enabled_extensions.contains(&khr::TimelineSemaphore::name())
         {
             Some(super::ExtensionFn::Extension(khr::TimelineSemaphore::new(
-                &self.instance.entry,
                 &self.instance.raw,
+                &raw_device,
             )))
         } else if self.phd_capabilities.properties.api_version >= vk::API_VERSION_1_2 {
             Some(super::ExtensionFn::Promoted)
