@@ -46,11 +46,13 @@ impl super::Queue {
         gl.draw_buffers(&[glow::COLOR_ATTACHMENT0 + draw_buffer]);
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
 
-        // Reset the draw buffers to what they were before the clear
-        let indices = (0..self.draw_buffer_count as u32)
-            .map(|i| glow::COLOR_ATTACHMENT0 + i)
-            .collect::<ArrayVec<_, { crate::MAX_COLOR_TARGETS }>>();
-        gl.draw_buffers(&indices);
+        if self.draw_buffer_count != 0 {
+            // Reset the draw buffers to what they were before the clear
+            let indices = (0..self.draw_buffer_count as u32)
+                .map(|i| glow::COLOR_ATTACHMENT0 + i)
+                .collect::<ArrayVec<_, { crate::MAX_COLOR_TARGETS }>>();
+            gl.draw_buffers(&indices);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         for draw_buffer in 0..self.draw_buffer_count as u32 {
             gl.disable_draw_buffer(glow::BLEND, draw_buffer);
@@ -82,6 +84,7 @@ impl super::Queue {
             super::TextureInner::Renderbuffer { raw } => {
                 gl.framebuffer_renderbuffer(fbo_target, attachment, glow::RENDERBUFFER, Some(raw));
             }
+            super::TextureInner::DefaultRenderbuffer => panic!("Unexpected default RBO"),
             super::TextureInner::Texture { raw, target } => {
                 if is_layered_target(target) {
                     gl.framebuffer_texture_layer(
@@ -636,24 +639,28 @@ impl super::Queue {
                     }
                 }
             }
-            C::ResetFramebuffer => {
-                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(self.draw_fbo));
-                gl.framebuffer_texture_2d(
-                    glow::DRAW_FRAMEBUFFER,
-                    glow::DEPTH_STENCIL_ATTACHMENT,
-                    glow::TEXTURE_2D,
-                    None,
-                    0,
-                );
-                for i in 0..crate::MAX_COLOR_TARGETS {
-                    let target = glow::COLOR_ATTACHMENT0 + i as u32;
+            C::ResetFramebuffer { is_default } => {
+                if is_default {
+                    gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+                } else {
+                    gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(self.draw_fbo));
                     gl.framebuffer_texture_2d(
                         glow::DRAW_FRAMEBUFFER,
-                        target,
+                        glow::DEPTH_STENCIL_ATTACHMENT,
                         glow::TEXTURE_2D,
                         None,
                         0,
                     );
+                    for i in 0..crate::MAX_COLOR_TARGETS {
+                        let target = glow::COLOR_ATTACHMENT0 + i as u32;
+                        gl.framebuffer_texture_2d(
+                            glow::DRAW_FRAMEBUFFER,
+                            target,
+                            glow::TEXTURE_2D,
+                            None,
+                            0,
+                        );
+                    }
                 }
                 gl.color_mask(true, true, true, true);
                 gl.depth_mask(true);

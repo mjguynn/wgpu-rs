@@ -98,7 +98,7 @@ impl super::Adapter {
             device_type: if (desc.Flags & dxgi::DXGI_ADAPTER_FLAG_SOFTWARE) != 0 {
                 workarounds.avoid_cpu_descriptor_overwrites = true;
                 wgt::DeviceType::Cpu
-            } else if features_architecture.CacheCoherentUMA != 0 {
+            } else if features_architecture.UMA != 0 {
                 wgt::DeviceType::IntegratedGpu
             } else {
                 wgt::DeviceType::DiscreteGpu
@@ -186,7 +186,7 @@ impl super::Adapter {
             | wgt::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | wgt::Features::TIMESTAMP_QUERY
             | wgt::Features::TEXTURE_COMPRESSION_BC
-            | wgt::Features::CLEAR_COMMANDS
+            | wgt::Features::CLEAR_TEXTURE
             | wgt::Features::TEXTURE_FORMAT_16BIT_NORM;
         //TODO: in order to expose this, we need to run a compute shader
         // that extract the necessary statistics out of the D3D12 result.
@@ -240,7 +240,7 @@ impl super::Adapter {
                     max_uniform_buffers_per_shader_stage: full_heap_count,
                     max_uniform_buffer_binding_size: d3d12::D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT
                         * 16,
-                    max_storage_buffer_binding_size: !0,
+                    max_storage_buffer_binding_size: crate::auxil::MAX_I32_BINDING_SIZE,
                     max_vertex_buffers: d3d12::D3D12_VS_INPUT_REGISTER_COUNT
                         .min(crate::MAX_VERTEX_BUFFERS as u32),
                     max_vertex_attributes: d3d12::D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT,

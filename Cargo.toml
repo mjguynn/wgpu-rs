@@ -8,6 +8,7 @@ members = [
     "wgpu-hal",
     "wgpu-info",
     "wgpu-types",
+    "run-wasm",
 ]
 exclude = [
     "cts_runner",
@@ -25,6 +26,7 @@ default-members = ["wgpu", "wgpu-hal", "wgpu-info"]
 #gpu-alloc = { path = "../gpu-alloc/gpu-alloc" }
 
 [patch.crates-io]
+#naga = { path = "../naga" }
 #glow = { path = "../glow" }
 #metal = { path = "../metal-rs" }
 #web-sys = { path = "../wasm-bindgen/crates/web-sys" }

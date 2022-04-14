@@ -505,13 +505,13 @@ bitflags::bitflags! {
         ///
         /// This is a native-only feature.
         const VERTEX_WRITABLE_STORAGE = 1 << 36;
-        /// Enables clear to zero for buffers & textures.
+        /// Enables clear to zero for textures.
         ///
         /// Supported platforms:
         /// - All
         ///
         /// This is a native only feature.
-        const CLEAR_COMMANDS = 1 << 37;
+        const CLEAR_TEXTURE = 1 << 37;
         /// Enables creating shader modules from SPIR-V binary data (unsafe).
         ///
         /// SPIR-V data is not parsed or interpreted in any way; you can use
@@ -628,9 +628,9 @@ pub struct Limits {
     pub max_sampled_textures_per_shader_stage: u32,
     /// Amount of samplers visible in a single shader stage. Defaults to 16. Higher is "better".
     pub max_samplers_per_shader_stage: u32,
-    /// Amount of storage buffers visible in a single shader stage. Defaults to 4. Higher is "better".
+    /// Amount of storage buffers visible in a single shader stage. Defaults to 8. Higher is "better".
     pub max_storage_buffers_per_shader_stage: u32,
-    /// Amount of storage textures visible in a single shader stage. Defaults to 4. Higher is "better".
+    /// Amount of storage textures visible in a single shader stage. Defaults to 8. Higher is "better".
     pub max_storage_textures_per_shader_stage: u32,
     /// Amount of uniform buffers visible in a single shader stage. Defaults to 12. Higher is "better".
     pub max_uniform_buffers_per_shader_stage: u32,
@@ -667,11 +667,13 @@ pub struct Limits {
     /// Defaults to 256. Lower is "better".
     pub min_storage_buffer_offset_alignment: u32,
     /// Maximum allowed number of components (scalars) of input or output locations for
-    /// inter-stage communication (vertex outputs to fragment inputs).
+    /// inter-stage communication (vertex outputs to fragment inputs). Defaults to 60.
     pub max_inter_stage_shader_components: u32,
-    /// Maximum number of bytes used for workgroup memory in a compute entry point.
+    /// Maximum number of bytes used for workgroup memory in a compute entry point. Defaults to
+    /// 16352.
     pub max_compute_workgroup_storage_size: u32,
     /// Maximum value of the product of the `workgroup_size` dimensions for a compute entry-point.
+    /// Defaults to 256.
     pub max_compute_invocations_per_workgroup: u32,
     /// The maximum value of the workgroup_size X dimension for a compute stage `ShaderModule` entry-point.
     /// Defaults to 256.
@@ -680,7 +682,7 @@ pub struct Limits {
     /// Defaults to 256.
     pub max_compute_workgroup_size_y: u32,
     /// The maximum value of the workgroup_size Z dimension for a compute stage `ShaderModule` entry-point.
-    /// Defaults to 256.
+    /// Defaults to 64.
     pub max_compute_workgroup_size_z: u32,
     /// The maximum value for each dimension of a `ComputePass::dispatch(x, y, z)` operation.
     /// Defaults to 65535.
@@ -2846,25 +2848,6 @@ impl Extent3d {
     ///
     /// This is the texture extent that you must upload at when uploading to _mipmaps_ of compressed textures.
     ///
-    /// ```rust
-    /// # use wgpu_types as wgpu;
-    /// let format = wgpu::TextureFormat::Bc1RgbaUnormSrgb; // 4x4 blocks
-    /// assert_eq!(
-    ///     wgpu::Extent3d { width: 7, height: 7, depth_or_array_layers: 1 }.physical_size(format),
-    ///     wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 }
-    /// );
-    /// // Doesn't change, already aligned
-    /// assert_eq!(
-    ///     wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 }.physical_size(format),
-    ///     wgpu::Extent3d { width: 8, height: 8, depth_or_array_layers: 1 }
-    /// );
-    /// let format = wgpu::TextureFormat::Astc8x5RgbaUnorm; // 8x5 blocks
-    /// assert_eq!(
-    ///     wgpu::Extent3d { width: 7, height: 7, depth_or_array_layers: 1 }.physical_size(format),
-    ///     wgpu::Extent3d { width: 8, height: 10, depth_or_array_layers: 1 }
-    /// );
-    /// ```
-    ///
     /// [physical size]: https://gpuweb.github.io/gpuweb/#physical-size
     pub fn physical_size(&self, format: TextureFormat) -> Self {
         let (block_width, block_height) = format.describe().block_dimensions;
@@ -2885,16 +2868,18 @@ impl Extent3d {
     ///
     /// Treats the depth as part of the mipmaps. If calculating
     /// for a 2DArray texture, which does not mipmap depth, set depth to 1.
-    ///
-    /// ```rust
-    /// # use wgpu_types as wgpu;
-    /// assert_eq!(wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }.max_mips(), 1);
-    /// assert_eq!(wgpu::Extent3d { width: 60, height: 60, depth_or_array_layers: 1 }.max_mips(), 6);
-    /// assert_eq!(wgpu::Extent3d { width: 240, height: 1, depth_or_array_layers: 1 }.max_mips(), 8);
-    /// ```
-    pub fn max_mips(&self) -> u32 {
-        let max_dim = self.width.max(self.height.max(self.depth_or_array_layers));
-        32 - max_dim.leading_zeros()
+    pub fn max_mips(&self, dim: TextureDimension) -> u32 {
+        match dim {
+            TextureDimension::D1 => 1,
+            TextureDimension::D2 => {
+                let max_dim = self.width.max(self.height);
+                32 - max_dim.leading_zeros()
+            }
+            TextureDimension::D3 => {
+                let max_dim = self.width.max(self.height.max(self.depth_or_array_layers));
+                32 - max_dim.leading_zeros()
+            }
+        }
     }
 
     /// Calculates the extent at a given mip level.
@@ -2909,6 +2894,104 @@ impl Extent3d {
             },
         }
     }
+}
+
+#[test]
+fn test_physical_size() {
+    let format = TextureFormat::Bc1RgbaUnormSrgb; // 4x4 blocks
+    assert_eq!(
+        Extent3d {
+            width: 7,
+            height: 7,
+            depth_or_array_layers: 1
+        }
+        .physical_size(format),
+        Extent3d {
+            width: 8,
+            height: 8,
+            depth_or_array_layers: 1
+        }
+    );
+    // Doesn't change, already aligned
+    assert_eq!(
+        Extent3d {
+            width: 8,
+            height: 8,
+            depth_or_array_layers: 1
+        }
+        .physical_size(format),
+        Extent3d {
+            width: 8,
+            height: 8,
+            depth_or_array_layers: 1
+        }
+    );
+    let format = TextureFormat::Astc8x5RgbaUnorm; // 8x5 blocks
+    assert_eq!(
+        Extent3d {
+            width: 7,
+            height: 7,
+            depth_or_array_layers: 1
+        }
+        .physical_size(format),
+        Extent3d {
+            width: 8,
+            height: 10,
+            depth_or_array_layers: 1
+        }
+    );
+}
+
+#[test]
+fn test_max_mips() {
+    // 1D
+    assert_eq!(
+        Extent3d {
+            width: 240,
+            height: 1,
+            depth_or_array_layers: 1
+        }
+        .max_mips(TextureDimension::D1),
+        1
+    );
+    // 2D
+    assert_eq!(
+        Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1
+        }
+        .max_mips(TextureDimension::D2),
+        1
+    );
+    assert_eq!(
+        Extent3d {
+            width: 60,
+            height: 60,
+            depth_or_array_layers: 1
+        }
+        .max_mips(TextureDimension::D2),
+        6
+    );
+    assert_eq!(
+        Extent3d {
+            width: 240,
+            height: 1,
+            depth_or_array_layers: 1000
+        }
+        .max_mips(TextureDimension::D2),
+        8
+    );
+    // 3D
+    assert_eq!(
+        Extent3d {
+            width: 16,
+            height: 30,
+            depth_or_array_layers: 60
+        }
+        .max_mips(TextureDimension::D3),
+        6
+    );
 }
 
 /// Describes a [`Texture`].

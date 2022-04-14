@@ -44,6 +44,15 @@ pub use wgt::{
 
 use backend::{BufferMappedRange, Context as C};
 
+/// Filter for error scopes.
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub enum ErrorFilter {
+    /// Catch only out-of-memory errors.
+    OutOfMemory,
+    /// Catch only validation errors.
+    Validation,
+}
+
 trait ComputePassInner<Ctx: Context> {
     fn set_pipeline(&mut self, pipeline: &Ctx::ComputePipelineId);
     fn set_bind_group(
@@ -183,6 +192,7 @@ trait Context: Debug + Send + Sized + Sync {
         + Send;
     type MapAsyncFuture: Future<Output = Result<(), BufferAsyncError>> + Send;
     type OnSubmittedWorkDoneFuture: Future<Output = ()> + Send;
+    type PopErrorScopeFuture: Future<Output = Option<Error>> + Send;
 
     fn init(backends: Backends) -> Self;
     fn instance_create_surface(
@@ -317,6 +327,8 @@ trait Context: Debug + Send + Sized + Sync {
         device: &Self::DeviceId,
         handler: impl UncapturedErrorHandler,
     );
+    fn device_push_error_scope(&self, device: &Self::DeviceId, filter: ErrorFilter);
+    fn device_pop_error_scope(&self, device: &Self::DeviceId) -> Self::PopErrorScopeFuture;
 
     fn buffer_map_async(
         &self,
@@ -741,34 +753,29 @@ impl Drop for ShaderModule {
 }
 
 /// Source of a shader module.
+///
+/// The source will be parsed and validated.
+///
+/// Any necessary shader translation (e.g. from WGSL to SPIR-V or vice versa)
+/// will be done internally by wgpu.
+#[non_exhaustive]
 pub enum ShaderSource<'a> {
     /// SPIR-V module represented as a slice of words.
-    ///
-    /// wgpu will attempt to parse and validate it, but the original binary
-    /// is passed to `gfx-rs` and `spirv_cross` for translation.
     #[cfg(feature = "spirv")]
     SpirV(Cow<'a, [u32]>),
     /// GLSL module as a string slice.
     ///
-    /// wgpu will attempt to parse and validate it. The module will get
-    /// passed to wgpu-core where it will translate it to the required languages.
-    ///
-    /// Note: GLSL is not yet fully supported and must be a direct ShaderStage.
+    /// Note: GLSL is not yet fully supported and must be a specific ShaderStage.
     #[cfg(feature = "glsl")]
     Glsl {
-        /// The shaders code
+        /// The source code of the shader.
         shader: Cow<'a, str>,
-        /// Stage in which the GLSL shader is for example: naga::ShaderStage::Vertex
+        /// The shader stage that the shader targets. For example, `naga::ShaderStage::Vertex`
         stage: naga::ShaderStage,
-        /// Defines to unlock configured shader features
+        /// Defines to unlock configured shader features.
         defines: naga::FastHashMap<String, String>,
     },
     /// WGSL module as a string slice.
-    ///
-    /// wgpu-rs will parse it and use for validation. It will attempt
-    /// to build a SPIR-V module internally and panic otherwise.
-    ///
-    /// Note: WGSL is not yet supported on the Web.
     Wgsl(Cow<'a, str>),
 }
 
@@ -1877,6 +1884,16 @@ impl Device {
         self.context.device_on_uncaptured_error(&self.id, handler);
     }
 
+    /// Push an error scope.
+    pub fn push_error_scope(&self, filter: ErrorFilter) {
+        self.context.device_push_error_scope(&self.id, filter);
+    }
+
+    /// Pop an error scope.
+    pub fn pop_error_scope(&self) -> impl Future<Output = Option<Error>> + Send {
+        self.context.device_pop_error_scope(&self.id)
+    }
+
     /// Starts frame capture.
     pub fn start_capture(&self) {
         Context::device_start_capture(&*self.context, &self.id)
@@ -2366,12 +2383,16 @@ impl CommandEncoder {
 
     /// Clears texture to zero.
     ///
-    /// Where possible it may be significantly more efficient to perform clears via render passes!
+    /// Note that unlike with clear_buffer, `COPY_DST` usage is not required.
+    ///
+    /// # Implementation notes
+    ///
+    /// - implemented either via buffer copies and render/depth target clear, path depends on texture usages
+    /// - behaves like texture zero init, but is performed immediately (clearing is *not* delayed via marking it as uninitialized)
     ///
     /// # Panics
     ///
-    /// - `CLEAR_COMMANDS` extension not enabled
-    /// - Texture does not have `COPY_DST` usage.
+    /// - `CLEAR_TEXTURE` extension not enabled
     /// - Range is out of bounds
     pub fn clear_texture(&mut self, texture: &Texture, subresource_range: &ImageSubresourceRange) {
         Context::command_encoder_clear_texture(
@@ -2584,18 +2605,7 @@ impl<'a> RenderPass<'a> {
     ///
     /// The active vertex buffers can be set with [`RenderPass::set_vertex_buffer`].
     ///
-    /// The structure expected in `indirect_buffer` is the following:
-    ///
-    /// ```rust
-    /// #[repr(C)]
-    /// struct DrawIndirect {
-    ///     vertex_count: u32, // The number of vertices to draw.
-    ///     instance_count: u32, // The number of instances to draw.
-    ///     first_vertex: u32, // The Index of the first vertex to draw.
-    ///     first_instance: u32, // The instance ID of the first instance to draw.
-    ///     // has to be 0, unless [`Features::INDIRECT_FIRST_INSTANCE`] is enabled.
-    /// }
-    /// ```
+    /// The structure expected in `indirect_buffer` must conform to [`DrawIndirect`](crate::util::DrawIndirect).
     pub fn draw_indirect(&mut self, indirect_buffer: &'a Buffer, indirect_offset: BufferAddress) {
         self.id.draw_indirect(&indirect_buffer.id, indirect_offset);
     }
@@ -2606,19 +2616,7 @@ impl<'a> RenderPass<'a> {
     /// The active index buffer can be set with [`RenderPass::set_index_buffer`], while the active
     /// vertex buffers can be set with [`RenderPass::set_vertex_buffer`].
     ///
-    /// The structure expected in `indirect_buffer` is the following:
-    ///
-    /// ```rust
-    /// #[repr(C)]
-    /// struct DrawIndexedIndirect {
-    ///     vertex_count: u32, // The number of vertices to draw.
-    ///     instance_count: u32, // The number of instances to draw.
-    ///     first_index: u32, // The base index within the index buffer.
-    ///     vertex_offset: i32, // The value added to the vertex index before indexing into the vertex buffer.
-    ///     first_instance: u32, // The instance ID of the first instance to draw.
-    ///     // has to be 0, unless [`Features::INDIRECT_FIRST_INSTANCE`] is enabled.
-    /// }
-    /// ```
+    /// The structure expected in `indirect_buffer` must conform to [`DrawIndexedIndirect`](crate::util::DrawIndexedIndirect).
     pub fn draw_indexed_indirect(
         &mut self,
         indirect_buffer: &'a Buffer,
@@ -2643,17 +2641,7 @@ impl<'a> RenderPass<'a> {
     ///
     /// The active vertex buffers can be set with [`RenderPass::set_vertex_buffer`].
     ///
-    /// The structure expected in `indirect_buffer` is the following:
-    ///
-    /// ```rust
-    /// #[repr(C)]
-    /// struct DrawIndirect {
-    ///     vertex_count: u32, // The number of vertices to draw.
-    ///     instance_count: u32, // The number of instances to draw.
-    ///     base_vertex: u32, // The Index of the first vertex to draw.
-    ///     base_instance: u32, // The instance ID of the first instance to draw.
-    /// }
-    /// ```
+    /// The structure expected in `indirect_buffer` must conform to [`DrawIndirect`](crate::util::DrawIndirect).
     ///
     /// These draw structures are expected to be tightly packed.
     pub fn multi_draw_indirect(
@@ -2672,18 +2660,7 @@ impl<'a> RenderPass<'a> {
     /// The active index buffer can be set with [`RenderPass::set_index_buffer`], while the active
     /// vertex buffers can be set with [`RenderPass::set_vertex_buffer`].
     ///
-    /// The structure expected in `indirect_buffer` is the following:
-    ///
-    /// ```rust
-    /// #[repr(C)]
-    /// struct DrawIndexedIndirect {
-    ///     vertex_count: u32, // The number of vertices to draw.
-    ///     instance_count: u32, // The number of instances to draw.
-    ///     base_index: u32, // The base index within the index buffer.
-    ///     vertex_offset: i32, // The value added to the vertex index before indexing into the vertex buffer.
-    ///     base_instance: u32, // The instance ID of the first instance to draw.
-    /// }
-    /// ```
+    /// The structure expected in `indirect_buffer` must conform to [`DrawIndexedIndirect`](crate::util::DrawIndexedIndirect).
     ///
     /// These draw structures are expected to be tightly packed.
     pub fn multi_draw_indexed_indirect(
@@ -2707,17 +2684,7 @@ impl<'a> RenderPass<'a> {
     ///
     /// The active vertex buffers can be set with [`RenderPass::set_vertex_buffer`].
     ///
-    /// The structure expected in `indirect_buffer` is the following:
-    ///
-    /// ```rust
-    /// #[repr(C)]
-    /// struct DrawIndirect {
-    ///     vertex_count: u32, // The number of vertices to draw.
-    ///     instance_count: u32, // The number of instances to draw.
-    ///     base_vertex: u32, // The Index of the first vertex to draw.
-    ///     base_instance: u32, // The instance ID of the first instance to draw.
-    /// }
-    /// ```
+    /// The structure expected in `indirect_buffer` must conform to [`DrawIndirect`](crate::util::DrawIndirect).
     ///
     /// These draw structures are expected to be tightly packed.
     ///
@@ -2755,18 +2722,8 @@ impl<'a> RenderPass<'a> {
     /// The active index buffer can be set with [`RenderPass::set_index_buffer`], while the active
     /// vertex buffers can be set with [`RenderPass::set_vertex_buffer`].
     ///
-    /// The structure expected in `indirect_buffer` is the following:
     ///
-    /// ```rust
-    /// #[repr(C)]
-    /// struct DrawIndexedIndirect {
-    ///     vertex_count: u32, // The number of vertices to draw.
-    ///     instance_count: u32, // The number of instances to draw.
-    ///     base_index: u32, // The base index within the index buffer.
-    ///     vertex_offset: i32, // The value added to the vertex index before indexing into the vertex buffer.
-    ///     base_instance: u32, // The instance ID of the first instance to draw.
-    /// }
-    /// ```
+    /// The structure expected in `indirect_buffer` must conform to [`DrawIndexedIndirect`](crate::util::DrawIndexedIndirect).
     ///
     /// These draw structures are expected to be tightly packed.
     ///
@@ -2917,17 +2874,7 @@ impl<'a> ComputePass<'a> {
 
     /// Dispatches compute work operations, based on the contents of the `indirect_buffer`.
     ///
-    /// The structure expected in `indirect_buffer` is the following:
-    ///
-    /// ```rust
-    /// // x, y and z denote the number of work groups to dispatch in each dimension.
-    /// #[repr(C)]
-    /// struct DispatchIndirect {
-    ///     x: u32,
-    ///     y: u32,
-    ///     z: u32,
-    /// }
-    /// ```
+    /// The structure expected in `indirect_buffer` must conform to [`DispatchIndirect`](crate::util::DispatchIndirect).
     pub fn dispatch_indirect(
         &mut self,
         indirect_buffer: &'a Buffer,
@@ -3073,17 +3020,7 @@ impl<'a> RenderBundleEncoder<'a> {
     ///
     /// The active vertex buffers can be set with [`RenderBundleEncoder::set_vertex_buffer`].
     ///
-    /// The structure expected in `indirect_buffer` is the following:
-    ///
-    /// ```rust
-    /// #[repr(C)]
-    /// struct DrawIndirect {
-    ///     vertex_count: u32, // The number of vertices to draw.
-    ///     instance_count: u32, // The number of instances to draw.
-    ///     base_vertex: u32, // The Index of the first vertex to draw.
-    ///     base_instance: u32, // The instance ID of the first instance to draw.
-    /// }
-    /// ```
+    /// The structure expected in `indirect_buffer` must conform to [`DrawIndirect`](crate::util::DrawIndirect).
     pub fn draw_indirect(&mut self, indirect_buffer: &'a Buffer, indirect_offset: BufferAddress) {
         self.id.draw_indirect(&indirect_buffer.id, indirect_offset);
     }
@@ -3094,18 +3031,7 @@ impl<'a> RenderBundleEncoder<'a> {
     /// The active index buffer can be set with [`RenderBundleEncoder::set_index_buffer`], while the active
     /// vertex buffers can be set with [`RenderBundleEncoder::set_vertex_buffer`].
     ///
-    /// The structure expected in `indirect_buffer` is the following:
-    ///
-    /// ```rust
-    /// #[repr(C)]
-    /// struct DrawIndexedIndirect {
-    ///     vertex_count: u32, // The number of vertices to draw.
-    ///     instance_count: u32, // The number of instances to draw.
-    ///     base_index: u32, // The base index within the index buffer.
-    ///     vertex_offset: i32, // The value added to the vertex index before indexing into the vertex buffer.
-    ///     base_instance: u32, // The instance ID of the first instance to draw.
-    /// }
-    /// ```
+    /// The structure expected in `indirect_buffer` must conform to [`DrawIndexedIndirect`](crate::util::DrawIndexedIndirect).
     pub fn draw_indexed_indirect(
         &mut self,
         indirect_buffer: &'a Buffer,
@@ -3288,12 +3214,12 @@ impl<T> UncapturedErrorHandler for T where T: Fn(Error) + Send + 'static {}
 #[derive(Debug)]
 pub enum Error {
     /// Out of memory error
-    OutOfMemoryError {
+    OutOfMemory {
         ///
         source: Box<dyn error::Error + Send + 'static>,
     },
     /// Validation error, signifying a bug in code or data
-    ValidationError {
+    Validation {
         ///
         source: Box<dyn error::Error + Send + 'static>,
         ///
@@ -3304,8 +3230,8 @@ pub enum Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            Error::OutOfMemoryError { source } => Some(source.as_ref()),
-            Error::ValidationError { source, .. } => Some(source.as_ref()),
+            Error::OutOfMemory { source } => Some(source.as_ref()),
+            Error::Validation { source, .. } => Some(source.as_ref()),
         }
     }
 }
@@ -3313,8 +3239,8 @@ impl error::Error for Error {
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::OutOfMemoryError { .. } => f.write_str("Out of Memory"),
-            Error::ValidationError { description, .. } => f.write_str(description),
+            Error::OutOfMemory { .. } => f.write_str("Out of Memory"),
+            Error::Validation { description, .. } => f.write_str(description),
         }
     }
 }
