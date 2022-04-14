@@ -1,14 +1,14 @@
 struct Uniforms {
-    view: mat4x4<f32>;
-    projection: mat4x4<f32>;
-    time_size_width: vec4<f32>;
-    viewport_height: f32;
+    view: mat4x4<f32>,
+    projection: mat4x4<f32>,
+    time_size_width: vec4<f32>,
+    viewport_height: f32,
 };
-[[group(0), binding(0)]] var<uniform> uniforms: Uniforms;
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
-let light_point: vec3<f32> = vec3<f32>(150.0, 70.0, 0.0);
-let light_colour: vec3<f32> = vec3<f32>(1.0, 0.98, 0.82);
-let one: vec4<f32> = vec4<f32>(1.0, 1.0, 1.0, 1.0);
+let light_point = vec3<f32>(150.0, 70.0, 0.0);
+let light_colour = vec3<f32>(1.0, 0.98, 0.82);
+let one = vec4<f32>(1.0, 1.0, 1.0, 1.0);
 
 let Y_SCL: f32 = 0.86602540378443864676372317075294;
 let CURVE_BIAS: f32 = -0.1;
@@ -90,21 +90,21 @@ fn snoise(v: vec3<f32>) -> f32 {
     let a0 = b0.xzyw + s0.xzyw*sh.xxyy;
     let a1 = b1.xzyw + s1.xzyw*sh.zzww;
 
-    var p0: vec3<f32> = vec3<f32>(a0.xy, h.x);
-    var p1: vec3<f32> = vec3<f32>(a0.zw, h.y);
-    var p2: vec3<f32> = vec3<f32>(a1.xy, h.z);
-    var p3: vec3<f32> = vec3<f32>(a1.zw, h.w);
+    var p0 = vec3<f32>(a0.xy, h.x);
+    var p1 = vec3<f32>(a0.zw, h.y);
+    var p2 = vec3<f32>(a1.xy, h.z);
+    var p3 = vec3<f32>(a1.zw, h.w);
 
     //Normalise gradients
     let norm = taylorInvSqrt(vec4<f32>(dot(p0, p0), dot(p1, p1), dot(p2, p2), dot(p3, p3)));
-    p0 = p0 * norm.x;
-    p1 = p1 * norm.y;
-    p2 = p2 * norm.z;
-    p3 = p3 * norm.w;
+    p0 *= norm.x;
+    p1 *= norm.y;
+    p2 *= norm.z;
+    p3 *= norm.w;
 
     // Mix final noise value
     var m: vec4<f32> = max(0.6 * one - vec4<f32>(dot(x0, x0), dot(x1, x1), dot(x2, x2), dot(x3, x3)), 0.0 * one);
-    m = m * m;
+    m *= m;
     return 9.0 * dot(m*m, vec4<f32>(dot(p0, x0), dot(p1, x1), dot(p2, x2), dot(p3, x3)));
 }
 
@@ -181,16 +181,16 @@ fn calc_specular(eye: vec3<f32>, normal: vec3<f32>, light: vec3<f32>) -> f32 {
 }
 
 struct VertexOutput {
-    [[builtin(position)]] position: vec4<f32>;
-    [[location(0)]] f_WaterScreenPos: vec2<f32>;
-    [[location(1)]] f_Fresnel: f32;
-    [[location(2)]] f_Light: vec3<f32>;
+    @builtin(position) position: vec4<f32>,
+    @location(0) f_WaterScreenPos: vec2<f32>,
+    @location(1) f_Fresnel: f32,
+    @location(2) f_Light: vec3<f32>,
 };
 
-[[stage(vertex)]]
+@stage(vertex)
 fn vs_main(
-    [[location(0)]] position: vec2<i32>,
-    [[location(1)]] offsets: vec4<i32>,
+    @location(0) position: vec2<i32>,
+    @location(1) offsets: vec4<i32>,
 ) -> VertexOutput {
     let p_pos = vec2<f32>(position);
     let b_pos = make_position(p_pos + vec2<f32>(offsets.xy));
@@ -218,33 +218,34 @@ fn vs_main(
 }
 
 
-let water_colour: vec3<f32> = vec3<f32>(0.0, 0.46, 0.95);
-let zNear: f32 = 10.0;
-let zFar: f32 = 400.0;
+let water_colour = vec3<f32>(0.0, 0.46, 0.95);
+let zNear = 10.0;
+let zFar = 400.0;
 
-[[group(0), binding(1)]] var reflection: texture_2d<f32>;
-[[group(0), binding(2)]] var terrain_depth_tex: texture_2d<f32>;
-[[group(0), binding(3)]] var colour_sampler: sampler;
+@group(0) @binding(1) var reflection: texture_2d<f32>;
+@group(0) @binding(2) var terrain_depth_tex: texture_2d<f32>;
+@group(0) @binding(3) var colour_sampler: sampler;
+@group(0) @binding(4) var depth_sampler: sampler;
 
 fn to_linear_depth(depth: f32) -> f32 {
-    let z_n: f32 = 2.0 * depth - 1.0;
-    let z_e: f32 = 2.0 * zNear * zFar / (zFar + zNear - z_n * (zFar - zNear));
+    let z_n = 2.0 * depth - 1.0;
+    let z_e = 2.0 * zNear * zFar / (zFar + zNear - z_n * (zFar - zNear));
     return z_e;
 }
 
-[[stage(fragment)]]
-fn fs_main(in: VertexOutput) -> [[location(0)]] vec4<f32> {
+@stage(fragment)
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let reflection_colour = textureSample(reflection, colour_sampler, in.f_WaterScreenPos.xy).xyz;
 
     let pixel_depth = to_linear_depth(in.position.z);
     let normalized_coords = in.position.xy / vec2<f32>(uniforms.time_size_width.w, uniforms.viewport_height);
-    let terrain_depth = to_linear_depth(textureSample(terrain_depth_tex, colour_sampler, normalized_coords).r);
+    let terrain_depth = to_linear_depth(textureSample(terrain_depth_tex, depth_sampler, normalized_coords).r);
 
     let dist = terrain_depth - pixel_depth;
-    let clamped = pow(smoothStep(0.0, 1.5, dist), 4.8);
+    let clamped = pow(smoothstep(0.0, 1.5, dist), 4.8);
 
     let final_colour = in.f_Light + reflection_colour;
-    let t = smoothStep(1.0, 5.0, dist) * 0.2; //TODO: splat for mix()?
+    let t = smoothstep(1.0, 5.0, dist) * 0.2; //TODO: splat for mix()?
     let depth_colour = mix(final_colour, water_colour, vec3<f32>(t, t, t));
 
     return vec4<f32>(depth_colour, clamped * (1.0 - in.f_Fresnel));

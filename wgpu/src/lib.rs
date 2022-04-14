@@ -2,6 +2,7 @@
 //!
 //! To start using the API, create an [`Instance`].
 
+#![cfg_attr(docsrs, feature(doc_cfg))] // Allow doc(cfg(feature = "")) for showing in docs that something is feature gated.
 #![doc(html_logo_url = "https://raw.githubusercontent.com/gfx-rs/wgpu/master/logo.png")]
 #![warn(missing_docs)]
 
@@ -25,13 +26,13 @@ use std::{
 use parking_lot::Mutex;
 
 pub use wgt::{
-    AdapterInfo, AddressMode, Backend, Backends, BindGroupLayoutEntry, BindingType, BlendComponent,
-    BlendFactor, BlendOperation, BlendState, BufferAddress, BufferBindingType, BufferSize,
-    BufferUsages, Color, ColorTargetState, ColorWrites, CommandBufferDescriptor, CompareFunction,
-    DepthBiasState, DepthStencilState, DeviceType, DownlevelCapabilities, DownlevelFlags,
-    DynamicOffset, Extent3d, Face, Features, FilterMode, FrontFace, ImageDataLayout,
-    ImageSubresourceRange, IndexFormat, Limits, MultisampleState, Origin3d,
-    PipelineStatisticsTypes, PolygonMode, PowerPreference, PresentMode, PrimitiveState,
+    AdapterInfo, AddressMode, AstcBlock, AstcChannel, Backend, Backends, BindGroupLayoutEntry,
+    BindingType, BlendComponent, BlendFactor, BlendOperation, BlendState, BufferAddress,
+    BufferBindingType, BufferSize, BufferUsages, Color, ColorTargetState, ColorWrites,
+    CommandBufferDescriptor, CompareFunction, DepthBiasState, DepthStencilState, DeviceType,
+    DownlevelCapabilities, DownlevelFlags, DynamicOffset, Extent3d, Face, Features, FilterMode,
+    FrontFace, ImageDataLayout, ImageSubresourceRange, IndexFormat, Limits, MultisampleState,
+    Origin3d, PipelineStatisticsTypes, PolygonMode, PowerPreference, PresentMode, PrimitiveState,
     PrimitiveTopology, PushConstantRange, QueryType, RenderBundleDepthStencil, SamplerBindingType,
     SamplerBorderColor, ShaderLocation, ShaderModel, ShaderStages, StencilFaceState,
     StencilOperation, StencilState, StorageTextureAccess, SurfaceConfiguration, SurfaceStatus,
@@ -217,7 +218,7 @@ trait Context: Debug + Send + Sized + Sync {
     ) -> bool;
     fn adapter_features(&self, adapter: &Self::AdapterId) -> Features;
     fn adapter_limits(&self, adapter: &Self::AdapterId) -> Limits;
-    fn adapter_downlevel_properties(&self, adapter: &Self::AdapterId) -> DownlevelCapabilities;
+    fn adapter_downlevel_capabilities(&self, adapter: &Self::AdapterId) -> DownlevelCapabilities;
     fn adapter_get_info(&self, adapter: &Self::AdapterId) -> AdapterInfo;
     fn adapter_get_texture_format_features(
         &self,
@@ -762,11 +763,13 @@ impl Drop for ShaderModule {
 pub enum ShaderSource<'a> {
     /// SPIR-V module represented as a slice of words.
     #[cfg(feature = "spirv")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "spirv")))]
     SpirV(Cow<'a, [u32]>),
     /// GLSL module as a string slice.
     ///
     /// Note: GLSL is not yet fully supported and must be a specific ShaderStage.
     #[cfg(feature = "glsl")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "glsl")))]
     Glsl {
         /// The source code of the shader.
         shader: Cow<'a, str>,
@@ -937,7 +940,7 @@ pub struct ComputePass<'a> {
 /// It only supports a handful of render commands, but it makes them reusable. [`RenderBundle`]s
 /// can be executed onto a [`CommandEncoder`] using [`RenderPass::execute_bundles`].
 ///
-/// Executing a [`RenderBundle`] is often more efficient then issuing the underlying commands manually.
+/// Executing a [`RenderBundle`] is often more efficient than issuing the underlying commands manually.
 #[derive(Debug)]
 pub struct RenderBundleEncoder<'a> {
     context: Arc<C>,
@@ -953,7 +956,7 @@ pub struct RenderBundleEncoder<'a> {
 /// It only supports a handful of render commands, but it makes them reusable. [`RenderBundle`]s
 /// can be executed onto a [`CommandEncoder`] using [`RenderPass::execute_bundles`].
 ///
-/// Executing a [`RenderBundle`] is often more efficient then issuing the underlying commands manually.
+/// Executing a [`RenderBundle`] is often more efficient than issuing the underlying commands manually.
 #[derive(Debug)]
 pub struct RenderBundle {
     context: Arc<C>,
@@ -1431,7 +1434,7 @@ impl Instance {
     /// # Safety
     ///
     /// Refer to the creation of wgpu-hal Instance for every backend.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn from_hal<A: wgc::hub::HalApi>(hal_instance: A::Instance) -> Self {
         Self {
             context: Arc::new(C::from_hal_instance::<A>(hal_instance)),
@@ -1443,7 +1446,7 @@ impl Instance {
     /// # Arguments
     ///
     /// - `backends` - Backends from which to enumerate adapters.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub fn enumerate_adapters(&self, backends: Backends) -> impl Iterator<Item = Adapter> {
         let context = Arc::clone(&self.context);
         self.context
@@ -1474,7 +1477,7 @@ impl Instance {
     /// # Safety
     ///
     /// `hal_adapter` must be created from this instance internal handle.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn create_adapter_from_hal<A: wgc::hub::HalApi>(
         &self,
         hal_adapter: hal::ExposedAdapter<A>,
@@ -1511,6 +1514,16 @@ impl Instance {
         layer: *mut std::ffi::c_void,
     ) -> Surface {
         self.context.create_surface_from_core_animation_layer(layer)
+    }
+
+    /// Creates a surface from `IDCompositionVisual`.
+    ///
+    /// # Safety
+    ///
+    /// - visual must be a valid IDCompositionVisual to create a surface upon.
+    #[cfg(target_os = "windows")]
+    pub unsafe fn create_surface_from_visual(&self, visual: *mut std::ffi::c_void) -> Surface {
+        self.context.create_surface_from_visual(visual)
     }
 
     /// Creates a surface from a `web_sys::HtmlCanvasElement`.
@@ -1555,7 +1568,7 @@ impl Instance {
     }
 
     /// Generates memory report.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub fn generate_report(&self) -> wgc::hub::GlobalReport {
         self.context.generate_report()
     }
@@ -1607,7 +1620,7 @@ impl Adapter {
     ///
     /// - `hal_device` must be created from this adapter internal handle.
     /// - `desc.features` must be a subset of `hal_device` features.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn create_device_from_hal<A: wgc::hub::HalApi>(
         &self,
         hal_device: hal::OpenDevice<A>,
@@ -1658,8 +1671,8 @@ impl Adapter {
     }
 
     /// Get info about the adapter itself.
-    pub fn get_downlevel_properties(&self) -> DownlevelCapabilities {
-        Context::adapter_downlevel_properties(&*self.context, &self.id)
+    pub fn get_downlevel_capabilities(&self) -> DownlevelCapabilities {
+        Context::adapter_downlevel_capabilities(&*self.context, &self.id)
     }
 
     /// Returns the features supported for a given texture format by this adapter.
@@ -1846,7 +1859,7 @@ impl Device {
     /// - `hal_texture` must be created from this device internal handle
     /// - `hal_texture` must be created respecting `desc`
     /// - `hal_texture` must be initialized
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn create_texture_from_hal<A: wgc::hub::HalApi>(
         &self,
         hal_texture: A::Texture,
@@ -1910,7 +1923,7 @@ impl Device {
     /// # Safety
     ///
     /// - The raw handle obtained from the hal Device must not be manually destroyed
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn as_hal<A: wgc::hub::HalApi, F: FnOnce(Option<&A::Device>) -> R, R>(
         &self,
         hal_device_callback: F,
@@ -2203,7 +2216,7 @@ impl Texture {
     /// # Safety
     ///
     /// - The raw handle obtained from the hal Texture must not be manually destroyed
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn as_hal<A: wgc::hub::HalApi, F: FnOnce(Option<&A::Texture>)>(
         &self,
         hal_texture_callback: F,
@@ -2628,7 +2641,7 @@ impl<'a> RenderPass<'a> {
 
     /// Execute a [render bundle][RenderBundle], which is a set of pre-recorded commands
     /// that can be run together.
-    pub fn execute_bundles<I: Iterator<Item = &'a RenderBundle>>(&mut self, render_bundles: I) {
+    pub fn execute_bundles<I: IntoIterator<Item = &'a RenderBundle>>(&mut self, render_bundles: I) {
         self.id
             .execute_bundles(render_bundles.into_iter().map(|rb| &rb.id))
     }

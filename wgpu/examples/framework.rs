@@ -10,15 +10,6 @@ use winit::{
 #[path = "../tests/common/mod.rs"]
 pub mod test_common;
 
-#[rustfmt::skip]
-#[allow(unused)]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.0,
-    0.0, 0.0, 0.5, 1.0,
-);
-
 #[allow(dead_code)]
 pub fn cast_slice<T>(data: &[T]) -> &[u8] {
     use std::{mem::size_of, slice::from_raw_parts};
@@ -104,8 +95,7 @@ async fn setup<E: Example>(title: &str) -> Setup {
         use winit::platform::web::WindowExtWebSys;
         let query_string = web_sys::window().unwrap().location().search().unwrap();
         let level: log::Level = parse_url_query_string(&query_string, "RUST_LOG")
-            .map(|x| x.parse().ok())
-            .flatten()
+            .and_then(|x| x.parse().ok())
             .unwrap_or(log::Level::Error);
         console_log::init_with_level(level).expect("could not initialize logger");
         std::panic::set_hook(Box::new(console_error_panic_hook::hook));
@@ -151,7 +141,7 @@ async fn setup<E: Example>(title: &str) -> Setup {
     );
 
     let required_downlevel_capabilities = E::required_downlevel_capabilities();
-    let downlevel_capabilities = adapter.get_downlevel_properties();
+    let downlevel_capabilities = adapter.get_downlevel_capabilities();
     assert!(
         downlevel_capabilities.shader_model >= required_downlevel_capabilities.shader_model,
         "Adapter does not support the minimum shader model required to run this example: {:?}",

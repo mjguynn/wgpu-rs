@@ -11,12 +11,11 @@ publish = false
 resolver = "2"
 
 [dependencies]
-deno_console = { git = "https://github.com/denoland/deno", rev = "ca75752e5a9499a0a997809f02b18c2ba1ecd58d" }
-deno_core = { git = "https://github.com/denoland/deno", rev = "ca75752e5a9499a0a997809f02b18c2ba1ecd58d" }
-deno_timers = { git = "https://github.com/denoland/deno", rev = "ca75752e5a9499a0a997809f02b18c2ba1ecd58d" }
-deno_url = { git = "https://github.com/denoland/deno", rev = "ca75752e5a9499a0a997809f02b18c2ba1ecd58d" }
-deno_web = { git = "https://github.com/denoland/deno", rev = "ca75752e5a9499a0a997809f02b18c2ba1ecd58d" }
-deno_webidl = { git = "https://github.com/denoland/deno", rev = "ca75752e5a9499a0a997809f02b18c2ba1ecd58d" }
+deno_console = "0.43.0"
+deno_core = "0.125.0"
+deno_url = "0.43.0"
+deno_web = "0.74.0"
+deno_webidl = "0.43.0"
 deno_webgpu = { path = "../deno_webgpu" }
-tokio = { version = "1.10.0", features = ["full"] }
+tokio = { version = "1.15.0", features = ["full"] }
 termcolor = "1.1.2"

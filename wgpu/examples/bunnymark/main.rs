@@ -133,9 +133,9 @@ impl framework::Example for Example {
         let texture = {
             let img_data = include_bytes!("../../../logo.png");
             let decoder = png::Decoder::new(std::io::Cursor::new(img_data));
-            let (info, mut reader) = decoder.read_info().unwrap();
-            let mut buf = vec![0; info.buffer_size()];
-            reader.next_frame(&mut buf).unwrap();
+            let mut reader = decoder.read_info().unwrap();
+            let mut buf = vec![0; reader.output_buffer_size()];
+            let info = reader.next_frame(&mut buf).unwrap();
 
             let size = wgpu::Extent3d {
                 width: info.width,
@@ -176,7 +176,7 @@ impl framework::Example for Example {
         });
 
         let globals = Globals {
-            mvp: cgmath::ortho(
+            mvp: glam::Mat4::orthographic_rh(
                 0.0,
                 config.width as f32,
                 0.0,
@@ -184,7 +184,7 @@ impl framework::Example for Example {
                 -1.0,
                 1.0,
             )
-            .into(),
+            .to_cols_array_2d(),
             size: [BUNNY_SIZE; 2],
             pad: [0.0; 2],
         };

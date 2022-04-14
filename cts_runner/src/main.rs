@@ -4,14 +4,14 @@ use std::{
     rc::Rc,
 };
 
-use deno_core::error::anyhow;
+use deno_core::anyhow::anyhow;
 use deno_core::error::AnyError;
 use deno_core::located_script_name;
+use deno_core::op;
 use deno_core::resolve_url_or_path;
 use deno_core::serde_json;
 use deno_core::serde_json::json;
 use deno_core::JsRuntime;
-use deno_core::OpState;
 use deno_core::RuntimeOptions;
 use deno_core::ZeroCopyBuf;
 use deno_web::BlobStore;
@@ -40,8 +40,7 @@ async fn run() -> Result<(), AnyError> {
             deno_webidl::init(),
             deno_console::init(),
             deno_url::init(),
-            deno_web::init(BlobStore::default(), None),
-            deno_timers::init::<deno_timers::NoTimersPermission>(),
+            deno_web::init::<Permissions>(BlobStore::default(), None),
             deno_webgpu::init(true),
             extension(),
         ],
@@ -53,12 +52,9 @@ async fn run() -> Result<(), AnyError> {
     let bootstrap_script = format!("globalThis.bootstrap({})", serde_json::to_string(&cfg)?);
     isolate.execute_script(&located_script_name!(), &bootstrap_script)?;
 
-    isolate
-        .op_state()
-        .borrow_mut()
-        .put(deno_timers::NoTimersPermission);
+    isolate.op_state().borrow_mut().put(Permissions {});
 
-    let mod_id = isolate.load_module(&specifier, None).await?;
+    let mod_id = isolate.load_main_module(&specifier, None).await?;
     let mod_rx = isolate.mod_evaluate(mod_id);
 
     let rx = tokio::spawn(async move {
@@ -77,9 +73,9 @@ async fn run() -> Result<(), AnyError> {
 fn extension() -> deno_core::Extension {
     deno_core::Extension::builder()
         .ops(vec![
-            ("op_exit", deno_core::op_sync(op_exit)),
-            ("op_read_file_sync", deno_core::op_sync(op_read_file_sync)),
-            ("op_write_file_sync", deno_core::op_sync(op_write_file_sync)),
+            op_exit::decl(),
+            op_read_file_sync::decl(),
+            op_write_file_sync::decl(),
         ])
         .js(deno_core::include_js_files!(
           prefix "deno:cts_runner",
@@ -88,11 +84,13 @@ fn extension() -> deno_core::Extension {
         .build()
 }
 
-fn op_exit(_state: &mut OpState, code: i32, _: ()) -> Result<(), AnyError> {
+#[op]
+fn op_exit(code: i32) -> Result<(), AnyError> {
     std::process::exit(code)
 }
 
-fn op_read_file_sync(_state: &mut OpState, path: String, _: ()) -> Result<ZeroCopyBuf, AnyError> {
+#[op]
+fn op_read_file_sync(path: String) -> Result<ZeroCopyBuf, AnyError> {
     let path = std::path::Path::new(&path);
     let mut file = std::fs::File::open(path)?;
     let mut buf = Vec::new();
@@ -100,11 +98,8 @@ fn op_read_file_sync(_state: &mut OpState, path: String, _: ()) -> Result<ZeroCo
     Ok(ZeroCopyBuf::from(buf))
 }
 
-fn op_write_file_sync(
-    _state: &mut OpState,
-    path: String,
-    buf: ZeroCopyBuf,
-) -> Result<(), AnyError> {
+#[op]
+fn op_write_file_sync(path: String, buf: ZeroCopyBuf) -> Result<(), AnyError> {
     let path = std::path::Path::new(&path);
     let mut file = std::fs::File::create(path)?;
     file.write_all(&buf)?;
@@ -148,4 +143,15 @@ fn red_bold<S: AsRef<str>>(s: S) -> impl fmt::Display {
     let mut style_spec = ColorSpec::new();
     style_spec.set_fg(Some(Red)).set_bold(true);
     style(s, style_spec)
+}
+
+// NOP permissions
+struct Permissions;
+
+impl deno_web::TimersPermission for Permissions {
+    fn allow_hrtime(&mut self) -> bool {
+        false
+    }
+
+    fn check_unstable(&self, _state: &deno_core::OpState, _api_name: &'static str) {}
 }

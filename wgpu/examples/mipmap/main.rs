@@ -2,11 +2,11 @@
 mod framework;
 
 use bytemuck::{Pod, Zeroable};
-use std::{borrow::Cow, mem, num::NonZeroU32};
+use std::{borrow::Cow, f32::consts, mem, num::NonZeroU32};
 use wgpu::util::DeviceExt;
 
 const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-const MIP_LEVEL_COUNT: u32 = 9;
+const MIP_LEVEL_COUNT: u32 = 10;
 const MIP_PASS_COUNT: u32 = MIP_LEVEL_COUNT - 1;
 
 fn create_texels(size: usize, cx: f32, cy: f32) -> Vec<u8> {
@@ -61,15 +61,14 @@ struct Example {
 }
 
 impl Example {
-    fn generate_matrix(aspect_ratio: f32) -> cgmath::Matrix4<f32> {
-        let mx_projection = cgmath::perspective(cgmath::Deg(45f32), aspect_ratio, 1.0, 1000.0);
-        let mx_view = cgmath::Matrix4::look_at_rh(
-            cgmath::Point3::new(0f32, 0.0, 10.0),
-            cgmath::Point3::new(0f32, 50.0, 0.0),
-            cgmath::Vector3::unit_z(),
+    fn generate_matrix(aspect_ratio: f32) -> glam::Mat4 {
+        let projection = glam::Mat4::perspective_rh(consts::FRAC_PI_4, aspect_ratio, 1.0, 1000.0);
+        let view = glam::Mat4::look_at_rh(
+            glam::Vec3::new(0f32, 0.0, 10.0),
+            glam::Vec3::new(0f32, 50.0, 0.0),
+            glam::Vec3::Z,
         );
-        let mx_correction = framework::OPENGL_TO_WGPU_MATRIX;
-        mx_correction * mx_projection * mx_view
+        projection * view
     }
 
     fn generate_mipmaps(
@@ -98,7 +97,7 @@ impl Example {
                 targets: &[TEXTURE_FORMAT.into()],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
             depth_stencil: None,
@@ -114,7 +113,7 @@ impl Example {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
@@ -174,7 +173,7 @@ impl Example {
             }
             rpass.set_pipeline(&pipeline);
             rpass.set_bind_group(0, &bind_group, &[]);
-            rpass.draw(0..4, 0..1);
+            rpass.draw(0..3, 0..1);
             if let Some(ref query_sets) = query_sets {
                 rpass.write_timestamp(&query_sets.timestamp, timestamp_query_index_base + 1);
                 rpass.end_pipeline_statistics_query();
@@ -214,7 +213,7 @@ impl framework::Example for Example {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         // Create the texture
-        let size = 1 << MIP_LEVEL_COUNT;
+        let size = 1 << MIP_PASS_COUNT;
         let texels = create_texels(size as usize, -0.8, 0.156);
         let texture_extent = wgpu::Extent3d {
             width: size,

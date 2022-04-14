@@ -517,12 +517,19 @@ impl super::Device {
             None => vk::SwapchainKHR::null(),
         };
 
+        let color_space = if config.format == wgt::TextureFormat::Rgba16Float {
+            // Enable wide color gamut mode
+            // Vulkan swapchain for Android only supports DISPLAY_P3_NONLINEAR_EXT and EXTENDED_SRGB_LINEAR_EXT
+            vk::ColorSpaceKHR::EXTENDED_SRGB_LINEAR_EXT
+        } else {
+            vk::ColorSpaceKHR::SRGB_NONLINEAR
+        };
         let info = vk::SwapchainCreateInfoKHR::builder()
             .flags(vk::SwapchainCreateFlagsKHR::empty())
             .surface(surface.raw)
             .min_image_count(config.swap_chain_size)
             .image_format(self.shared.private_caps.map_texture_format(config.format))
-            .image_color_space(vk::ColorSpaceKHR::SRGB_NONLINEAR)
+            .image_color_space(color_space)
             .image_extent(vk::Extent2D {
                 width: config.extent.width,
                 height: config.extent.height,
@@ -974,6 +981,7 @@ impl crate::Device<super::Api> for super::Device {
                     .max_anisotropy(aniso.get() as f32);
             }
         }
+
         if let Some(color) = desc.border_color {
             vk_info = vk_info.border_color(conv::map_border_color(color));
         }
@@ -1470,8 +1478,9 @@ impl crate::Device<super::Api> for super::Device {
                     .depth_compare_op(conv::map_comparison(ds.depth_compare));
             }
             if ds.stencil.is_enabled() {
-                let front = conv::map_stencil_face(&ds.stencil.front);
-                let back = conv::map_stencil_face(&ds.stencil.back);
+                let s = &ds.stencil;
+                let front = conv::map_stencil_face(&s.front, s.read_mask, s.write_mask);
+                let back = conv::map_stencil_face(&s.back, s.read_mask, s.write_mask);
                 vk_depth_stencil = vk_depth_stencil
                     .stencil_test_enable(true)
                     .front(front)

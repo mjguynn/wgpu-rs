@@ -38,7 +38,7 @@ impl fmt::Debug for Context {
 }
 
 impl Context {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn from_hal_instance<A: wgc::hub::HalApi>(hal_instance: A::Instance) -> Self {
         Self(wgc::hub::Global::from_hal_instance::<A>(
             "wgpu",
@@ -51,7 +51,7 @@ impl Context {
         &self.0
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub fn enumerate_adapters(&self, backends: wgt::Backends) -> Vec<wgc::id::AdapterId> {
         self.0
             .enumerate_adapters(wgc::instance::AdapterInputs::Mask(backends, |_| {
@@ -59,7 +59,7 @@ impl Context {
             }))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn create_adapter_from_hal<A: wgc::hub::HalApi>(
         &self,
         hal_adapter: hal::ExposedAdapter<A>,
@@ -67,7 +67,7 @@ impl Context {
         self.0.create_adapter_from_hal(hal_adapter, PhantomData)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn create_device_from_hal<A: wgc::hub::HalApi>(
         &self,
         adapter: &wgc::id::AdapterId,
@@ -94,7 +94,7 @@ impl Context {
         Ok((device, device_id))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn create_texture_from_hal<A: wgc::hub::HalApi>(
         &self,
         hal_texture: A::Texture,
@@ -123,7 +123,7 @@ impl Context {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn device_as_hal<A: wgc::hub::HalApi, F: FnOnce(Option<&A::Device>) -> R, R>(
         &self,
         device: &Device,
@@ -133,7 +133,7 @@ impl Context {
             .device_as_hal::<A, F, R>(device.id, hal_device_callback)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub unsafe fn texture_as_hal<A: wgc::hub::HalApi, F: FnOnce(Option<&A::Texture>)>(
         &self,
         texture: &Texture,
@@ -143,7 +143,7 @@ impl Context {
             .texture_as_hal::<A, F>(texture.id, hal_texture_callback)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
     pub fn generate_report(&self) -> wgc::hub::GlobalReport {
         self.0.generate_report()
     }
@@ -154,6 +154,23 @@ impl Context {
         layer: *mut std::ffi::c_void,
     ) -> crate::Surface {
         let id = self.0.instance_create_surface_metal(layer, PhantomData);
+        crate::Surface {
+            context: Arc::clone(self),
+            id: Surface {
+                id,
+                configured_device: Mutex::default(),
+            },
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub unsafe fn create_surface_from_visual(
+        self: &Arc<Self>,
+        visual: *mut std::ffi::c_void,
+    ) -> crate::Surface {
+        let id = self
+            .0
+            .instance_create_surface_from_visual(visual, PhantomData);
         crate::Surface {
             context: Arc::clone(self),
             id: Surface {
@@ -865,9 +882,9 @@ impl crate::Context for Context {
         }
     }
 
-    fn adapter_downlevel_properties(&self, adapter: &Self::AdapterId) -> DownlevelCapabilities {
+    fn adapter_downlevel_capabilities(&self, adapter: &Self::AdapterId) -> DownlevelCapabilities {
         let global = &self.0;
-        match wgc::gfx_select!(*adapter => global.adapter_downlevel_properties(*adapter)) {
+        match wgc::gfx_select!(*adapter => global.adapter_downlevel_capabilities(*adapter)) {
             Ok(downlevel) => downlevel,
             Err(err) => self.handle_error_fatal(err, "Adapter::downlevel_properties"),
         }
@@ -1528,21 +1545,17 @@ impl crate::Context for Context {
 
     #[cfg_attr(target_arch = "wasm32", allow(unused))]
     fn device_drop(&self, device: &Self::DeviceId) {
-        #[cfg(not(target_arch = "wasm32"))]
+        let global = &self.0;
+
+        #[cfg(any(not(target_arch = "wasm32"), feature = "emscripten"))]
         {
-            let global = &self.0;
             match wgc::gfx_select!(device.id => global.device_poll(device.id, true)) {
                 Ok(()) => (),
                 Err(err) => self.handle_error_fatal(err, "Device::drop"),
             }
         }
-        //TODO: make this work in general
-        #[cfg(not(target_arch = "wasm32"))]
-        #[cfg(feature = "metal-auto-capture")]
-        {
-            let global = &self.0;
-            wgc::gfx_select!(device.id => global.device_drop(device.id));
-        }
+
+        wgc::gfx_select!(device.id => global.device_drop(device.id));
     }
 
     fn device_poll(&self, device: &Self::DeviceId, maintain: crate::Maintain) {
