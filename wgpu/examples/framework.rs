@@ -327,13 +327,12 @@ fn start<E: Example>(
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     accum_time += last_frame_inst.elapsed().as_secs_f32();
-                    last_frame_inst = Instant::now();
-                    frame_count += 1;
+                    let current_frame = Instant::now();
+                    println!(
+                        "{}",
+                        (current_frame - last_frame_inst).as_nanos()
+                    );
                     if frame_count == 100 {
-                        println!(
-                            "Avg frame time {}ms",
-                            accum_time * 1000.0 / frame_count as f32
-                        );
                         frame_str += &((accum_time * 1000.0 / frame_count as f32).to_string() + &"\n".to_string());
                         accum_time = 0.0;
                         frame_count = 0;
@@ -344,6 +343,8 @@ fn start<E: Example>(
                             std::process::exit(0);
                         }
                     }
+                    frame_count += 1;
+                    last_frame_inst = Instant::now();
                 }
 
                 let frame = match surface.get_current_texture() {
