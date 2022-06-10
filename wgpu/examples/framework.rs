@@ -195,24 +195,10 @@ fn start<E: Example>(
         queue,
     }: Setup,
 ) {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 1 && args.len() != 3 {
-        println!("Usage of modified example: either no arguments or two arguments");
-        println!("Optional arguments: name_of_file iteration_count");
-        return;
-    }
-    let mut final_frame_count = -1;
-    if args.len() == 3 {
-        let temp =  match args[2].parse::<i32>() {
-            | Ok(i) => i,
-            | _ => -1
-        };
-        if temp < 0 {
-            println!("Second argument must be a positive integer");
-            return;
-        }
-        final_frame_count = temp;
-    }
+    // `Some(n)` if this example should only run for `n` frames, or `None` if it should run forever
+    let max_frame_count = std::env::args().nth(1).and_then(|s| s.parse::<u64>().ok());
+    let mut frame_count = 0;
+
     let spawner = Spawner::new();
     let mut config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -230,39 +216,20 @@ fn start<E: Example>(
     //let mut last_update_inst = Instant::now();
     #[cfg(not(target_arch = "wasm32"))]
     let mut last_frame_inst = Instant::now();
-    #[cfg(not(target_arch = "wasm32"))]
-    let (mut frame_count, mut accum_time, mut frame_total) = (0, 0.0, 0);
-    let mut frame_str = "".to_string();
 
     log::info!("Entering render loop...");
     event_loop.run(move |event, _, control_flow| {
         let _ = (&instance, &adapter); // force ownership by the closure
-        *control_flow = if cfg!(feature = "metal-auto-capture") {
-            ControlFlow::Exit
+        if Some(frame_count) == max_frame_count || cfg!(feature = "metal-auto-capture") {
+            *control_flow = ControlFlow::Exit
         } else {
-            ControlFlow::Poll
+            *control_flow = ControlFlow::Poll
         };
         match event {
             event::Event::RedrawEventsCleared => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    // Clamp to some max framerate to avoid busy-looping too much
-                    // (we might be in wgpu::PresentMode::Mailbox, thus discarding superfluous frames)
-                    //
-                    // winit has window.current_monitor().video_modes() but that is a list of all full screen video modes.
-                    // So without extra dependencies it's a bit tricky to get the max refresh rate we can run the window on.
-                    // Therefore we just go with 60fps - sorry 120hz+ folks!
-                    // let target_frametime = Duration::from_secs_f64(1.0 / 60.0);
-                    // let time_since_last_frame = last_update_inst.elapsed();
-                    // if time_since_last_frame >= target_frametime {
-                        window.request_redraw();
-                        //last_update_inst = Instant::now();
-                    // } else {
-                    //     *control_flow = ControlFlow::WaitUntil(
-                    //         Instant::now() + target_frametime - time_since_last_frame,
-                    //     );
-                    // }
-
+                    window.request_redraw();
                     spawner.run_until_stalled();
                 }
 
@@ -316,24 +283,11 @@ fn start<E: Example>(
             event::Event::RedrawRequested(_) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    accum_time += last_frame_inst.elapsed().as_secs_f32();
-                    let current_frame = Instant::now();
+                    let current_frame_inst = Instant::now();
                     println!(
                         "{}",
-                        (current_frame - last_frame_inst).as_nanos()
+                        (current_frame_inst - last_frame_inst).as_nanos()
                     );
-                    if frame_count == 100 {
-                        frame_str += &((accum_time * 1000.0 / frame_count as f32).to_string() + &"\n".to_string());
-                        accum_time = 0.0;
-                        frame_count = 0;
-                        frame_total += 1;
-                        if final_frame_count > 0 && frame_total >= final_frame_count {
-                            std::fs::write(&args[1], &frame_str).
-                                expect("Unable to write file");
-                            std::process::exit(0);
-                        }
-                    }
-                    frame_count += 1;
                     last_frame_inst = Instant::now();
                 }
 
@@ -353,6 +307,11 @@ fn start<E: Example>(
                 example.render(&view, &device, &queue, &spawner);
 
                 frame.present();
+
+                // Using wrapping_add avoids panics if the user runs the program for a long time.
+                // This will only wrap if the user didn't specify a max frame count --  if they 
+                // did, it would have terminated beforehand
+                frame_count = frame_count.wrapping_add(1);
             }
             _ => {}
         }
