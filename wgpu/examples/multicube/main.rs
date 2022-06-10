@@ -2,7 +2,7 @@
 mod framework;
 
 use bytemuck::{Pod, Zeroable};
-use std::{borrow::Cow, mem};
+use std::{borrow::Cow, f32::consts, future::Future, mem, pin::Pin, task};
 use wgpu::util::DeviceExt;
 
 #[repr(C)]
@@ -83,12 +83,29 @@ fn create_texels(size: usize) -> Vec<u8> {
         .collect()
 }
 
+// This can be done simpler with `FutureExt`, but we don't want to add
+// a dependency just for this small case.
+struct ErrorFuture<F> {
+    inner: F,
+}
+impl<F: Future<Output = Option<wgpu::Error>>> Future for ErrorFuture<F> {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<()> {
+        let inner = unsafe { self.map_unchecked_mut(|me| &mut me.inner) };
+        inner.poll(cx).map(|error| {
+            if let Some(e) = error {
+                panic!("Rendering {}", e);
+            }
+        })
+    }
+}
+
 struct Example {
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
     index_count: usize,
     bind_group_layout: wgpu::BindGroupLayout,
-    center_list: Vec<cgmath::Vector3<f32>>,
+    center_list: Vec<glam::Vec3>,
     uniform_bufs: Vec<wgpu::Buffer>,
     texture_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
@@ -96,15 +113,14 @@ struct Example {
 }
 
 impl Example {
-    fn generate_matrix(aspect_ratio: f32, center: cgmath::Vector3<f32>) -> cgmath::Matrix4<f32> {
-        let mx_projection = cgmath::perspective(cgmath::Deg(45f32), aspect_ratio, 1.0, 10.0);
-        let mx_view = cgmath::Matrix4::look_at_rh(
-            cgmath::Point3::new(1.5f32, -5.0, 3.0),
-            cgmath::Point3::new(center[0], center[1], center[2]),
-            cgmath::Vector3::unit_z(),
+    fn generate_matrix(aspect_ratio: f32, center: glam::Vec3) -> glam::Mat4 {
+        let projection = glam::Mat4::perspective_rh(consts::FRAC_PI_4, aspect_ratio, 1.0, 10.0);
+        let view = glam::Mat4::look_at_rh(
+            glam::Vec3::new(1.5f32, -5.0, 3.0),
+            center,
+            glam::Vec3::Z,
         );
-        let mx_correction = framework::OPENGL_TO_WGPU_MATRIX;
-        mx_correction * mx_projection * mx_view
+        projection * view
     }
 }
 
@@ -198,10 +214,10 @@ impl framework::Example for Example {
 
         // Create other resources
         let center_list = vec![
-            cgmath::Vector3::new(0.0, 0.0, 0.0),
-            cgmath::Vector3::new(1.0, 0.0, 0.0),
-            cgmath::Vector3::new(0.0, 1.0, 0.0),
-            cgmath::Vector3::new(0.0, 0.0, 1.0)
+            glam::Vec3::new(0.0, 0.0, 0.0),
+            glam::Vec3::new(1.0, 0.0, 0.0),
+            glam::Vec3::new(0.0, 1.0, 0.0),
+            glam::Vec3::new(0.0, 0.0, 1.0)
         ];
         
         let mut uniform_bufs: Vec<wgpu::Buffer> = vec![];
@@ -257,6 +273,7 @@ impl framework::Example for Example {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
+            multiview: None,
         });
 
         let pipeline_wire = if device.features().contains(wgt::Features::POLYGON_MODE_LINE) {
@@ -292,6 +309,7 @@ impl framework::Example for Example {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
+                multiview: None,
             });
             Some(pipeline_wire)
         } else {
@@ -335,8 +353,25 @@ impl framework::Example for Example {
         view: &wgpu::TextureView,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _spawner: &framework::Spawner,
+        spawner: &framework::Spawner,
     ) {
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let bind_groups: Vec<_> = self.uniform_bufs.iter().map(|buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.texture_view),
+                    },
+                ],
+                label: None,
+            })
+        }).collect();
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
@@ -358,21 +393,8 @@ impl framework::Example for Example {
                 }],
                 depth_stencil_attachment: None,
             });
-            for buffer in &self.uniform_bufs {
-                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    layout: &self.bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&self.texture_view),
-                        },
-                    ],
-                    label: None,
-                });
+
+            for bind_group in &bind_groups {
                 rpass.push_debug_group("Prepare data for draw.");
                 rpass.set_pipeline(&self.pipeline);
                 rpass.set_bind_group(0, &bind_group, &[]);
@@ -389,6 +411,9 @@ impl framework::Example for Example {
         }
 
         queue.submit(Some(encoder.finish()));
+        spawner.spawn_local(ErrorFuture {
+            inner: device.pop_error_scope(),
+        });
     }
 }
 
