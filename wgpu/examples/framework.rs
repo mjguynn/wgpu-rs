@@ -130,7 +130,7 @@ async fn setup<E: Example>(title: &str) -> Setup {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let adapter_info = adapter.get_info();
-        println!("Using {} ({:?})", adapter_info.name, adapter_info.backend);
+        eprintln!("Using {} ({:?})", adapter_info.name, adapter_info.backend);
     }
 
     let optional_features = E::optional_features();
@@ -214,18 +214,13 @@ fn start<E: Example>(
     log::info!("Initializing the example...");
     let mut example = E::init(&config, &adapter, &device, &queue);
 
+    // A capacity of 200,000 seems sufficient for timing a 120s runtime with no reallocations.
+    let mut timings = Vec::with_capacity(200_000);
+
+    log::info!("Entering render loop...");
     #[cfg(not(target_arch = "wasm32"))]
     let mut last_frame_inst = Instant::now();
 
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut output = {
-        log::info!("Locking stdout...");
-        stdout().lock()
-    };
-
-    let mut timings = Vec::new();
-
-    log::info!("Entering render loop...");
     event_loop.run(move |event, _, control_flow| {
         let _ = (&instance, &adapter); // force ownership by the closure
         if Some(frame_count) == max_frame_count || cfg!(feature = "metal-auto-capture") {
@@ -234,7 +229,9 @@ fn start<E: Example>(
             *control_flow = ControlFlow::Poll
         };
         match event {
-            event::Event::LoopDestroyed => {
+            #[cfg(not(target_arch = "wasm32"))]
+            event::Event::LoopDestroyed => { 
+                let mut output = stdout().lock();
                 for timing in &timings {
                     write!(output, "{}\n", timing).unwrap();
                 }
@@ -282,7 +279,7 @@ fn start<E: Example>(
                         },
                     ..
                 } => {
-                    write!(output, "{:#?}", instance.generate_report()).unwrap();
+                    println!("{:#?}", instance.generate_report());
                 }
                 _ => {
                     example.update(event);
@@ -313,10 +310,7 @@ fn start<E: Example>(
 
                 frame.present();
 
-                // Using wrapping_add avoids panics if the user runs the program for a long time.
-                // This will only wrap if the user didn't specify a max frame count --  if they 
-                // did, it would have terminated beforehand
-                frame_count = frame_count.wrapping_add(1);
+                frame_count += 1;
             }
             _ => {}
         }
