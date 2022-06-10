@@ -1,5 +1,7 @@
 use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
+use std::io::{stdout, Write};
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Instant};
 use winit::{
     event::{self, WindowEvent},
@@ -213,9 +215,13 @@ fn start<E: Example>(
     let mut example = E::init(&config, &adapter, &device, &queue);
 
     #[cfg(not(target_arch = "wasm32"))]
-    //let mut last_update_inst = Instant::now();
-    #[cfg(not(target_arch = "wasm32"))]
     let mut last_frame_inst = Instant::now();
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut output = {
+        log::info!("Locking stdout...");
+        stdout().lock()
+    };
 
     log::info!("Entering render loop...");
     event_loop.run(move |event, _, control_flow| {
@@ -227,14 +233,9 @@ fn start<E: Example>(
         };
         match event {
             event::Event::RedrawEventsCleared => {
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    window.request_redraw();
-                    spawner.run_until_stalled();
-                }
-
-                #[cfg(target_arch = "wasm32")]
                 window.request_redraw();
+                #[cfg(not(target_arch = "wasm32"))]
+                spawner.run_until_stalled();
             }
             event::Event::WindowEvent {
                 event:
@@ -274,7 +275,7 @@ fn start<E: Example>(
                         },
                     ..
                 } => {
-                    println!("{:#?}", instance.generate_report());
+                    write!(output, "{:#?}", instance.generate_report()).unwrap();
                 }
                 _ => {
                     example.update(event);
@@ -283,11 +284,8 @@ fn start<E: Example>(
             event::Event::RedrawRequested(_) => {
                 #[cfg(not(target_arch = "wasm32"))]
                 {
-                    let current_frame_inst = Instant::now();
-                    println!(
-                        "{}",
-                        (current_frame_inst - last_frame_inst).as_nanos()
-                    );
+                    let elapsed_nanos = (Instant::now() - last_frame_inst).as_nanos();
+                    write!(output, "{}\n", elapsed_nanos).unwrap();
                     last_frame_inst = Instant::now();
                 }
 
