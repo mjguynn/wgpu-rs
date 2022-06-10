@@ -8,7 +8,3 @@ rather than `init()`.
 ```
 cargo run --example multicube-rb
 ```
-
-## Screenshots
-
-![Multicube-RB example](./screenshot.png)

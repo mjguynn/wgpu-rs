@@ -7,7 +7,3 @@ This example renders multiple overlapping textured cubes.
 ```
 cargo run --example multicube
 ```
-
-## Screenshots
-
-![Multicube example](./screenshot.png)
