@@ -223,6 +223,8 @@ fn start<E: Example>(
         stdout().lock()
     };
 
+    let mut timings = Vec::new();
+
     log::info!("Entering render loop...");
     event_loop.run(move |event, _, control_flow| {
         let _ = (&instance, &adapter); // force ownership by the closure
@@ -232,6 +234,11 @@ fn start<E: Example>(
             *control_flow = ControlFlow::Poll
         };
         match event {
+            event::Event::LoopDestroyed => {
+                for timing in &timings {
+                    write!(output, "{}\n", timing).unwrap();
+                }
+            }
             event::Event::RedrawEventsCleared => {
                 window.request_redraw();
                 #[cfg(not(target_arch = "wasm32"))]
@@ -285,7 +292,7 @@ fn start<E: Example>(
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     let elapsed_nanos = (Instant::now() - last_frame_inst).as_nanos();
-                    write!(output, "{}\n", elapsed_nanos).unwrap();
+                    timings.push(elapsed_nanos);
                     last_frame_inst = Instant::now();
                 }
 
