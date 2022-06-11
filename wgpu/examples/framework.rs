@@ -2,7 +2,7 @@ use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::{stdout, Write};
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Instant};
+use std::time::Instant;
 use winit::{
     event::{self, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -207,7 +207,7 @@ fn start<E: Example>(
         format: surface.get_preferred_format(&adapter).unwrap(),
         width: size.width,
         height: size.height,
-        present_mode: wgpu::PresentMode::Mailbox,
+        present_mode: wgpu::PresentMode::Immediate,
     };
     surface.configure(&device, &config);
 
@@ -230,7 +230,7 @@ fn start<E: Example>(
         };
         match event {
             #[cfg(not(target_arch = "wasm32"))]
-            event::Event::LoopDestroyed => { 
+            event::Event::LoopDestroyed => {
                 let mut output = stdout().lock();
                 for timing in &timings {
                     write!(output, "{}\n", timing).unwrap();
