@@ -287,7 +287,7 @@ fn start<E: Example>(
             },
             event::Event::RedrawRequested(_) => {
                 #[cfg(not(target_arch = "wasm32"))]
-                {
+                if max_frame_count.is_some() {
                     let elapsed_nanos = (Instant::now() - last_frame_inst).as_nanos();
                     timings.push(elapsed_nanos);
                     last_frame_inst = Instant::now();
