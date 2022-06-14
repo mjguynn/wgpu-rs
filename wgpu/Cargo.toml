@@ -45,7 +45,28 @@ test = true
 
 [[example]]
 name="cube"
+required-features = ["spirv"]
 test = true
+
+[[example]]
+name="cube-rb"
+required-features = ["spirv"]
+
+[[example]]
+name="cube-rb-dup"
+required-features = ["spirv"]
+
+[[example]]
+name="cube-rb-rev"
+required-features = ["spirv"]
+
+[[example]]
+name="multicube"
+required-features = ["spirv"]
+
+[[example]]
+name="multicube-rb"
+required-features = ["spirv"]
 
 [[example]]
 name="hello-compute"
