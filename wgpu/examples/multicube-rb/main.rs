@@ -104,9 +104,10 @@ struct Example {
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
     index_count: usize,
-    bind_groups: Vec<wgpu::BindGroup>,
+    bind_group_layout: wgpu::BindGroupLayout,
     center_list: Vec<glam::Vec3>,
     uniform_bufs: Vec<wgpu::Buffer>,
+    texture_view: wgpu::TextureView,
     pipeline: wgpu::RenderPipeline,
     pipeline_wire: Option<wgpu::RenderPipeline>,
 }
@@ -176,7 +177,6 @@ impl framework::Example for Example {
                 },
             ],
         });
-
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
             bind_group_layouts: &[&bind_group_layout],
@@ -231,24 +231,6 @@ impl framework::Example for Example {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             }));
         }
-
-        // Create bind groups
-        let bind_groups: Vec<wgpu::BindGroup> = uniform_bufs.iter().map(|buffer| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&texture_view),
-                    },
-                ],
-                label: None,
-            })
-        }).collect();
 
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: None,
@@ -339,8 +321,9 @@ impl framework::Example for Example {
             vertex_buf,
             index_buf,
             index_count: index_data.len(),
-            bind_groups,
+            bind_group_layout,
             center_list,
+            texture_view,
             uniform_bufs,
             pipeline,
             pipeline_wire,
@@ -373,6 +356,22 @@ impl framework::Example for Example {
         spawner: &framework::Spawner,
     ) {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let bind_groups: Vec<_> = self.uniform_bufs.iter().map(|buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.texture_view),
+                    },
+                ],
+                label: None,
+            })
+        }).collect();
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
@@ -395,7 +394,7 @@ impl framework::Example for Example {
                 depth_stencil_attachment: None,
             });
 
-            for bind_group in &self.bind_groups {
+            for bind_group in &bind_groups {
                 rpass.push_debug_group("Prepare data for draw.");
                 rpass.set_pipeline(&self.pipeline);
                 rpass.set_bind_group(0, &bind_group, &[]);

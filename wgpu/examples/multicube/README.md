@@ -1,13 +1,9 @@
-# cube
+# multicube
 
-This example renders a textured cube.
+This example renders multiple overlapping textured cubes.
 
 ## To Run
 
 ```
-cargo run --example cube2
+cargo run --example multicube
 ```
-
-## Screenshots
-
-![Cube example](./screenshot.png)
