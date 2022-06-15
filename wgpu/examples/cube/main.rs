@@ -238,16 +238,18 @@ impl framework::Example for Example {
         });
 
         let spirv_bytes = spirv::build(&[
-            spirv::Component::SpirV {
-                path: "wgpu/examples/cube_shared/cube_vert.spv",
-            },
-            spirv::Component::Hlsl {
-                path: "wgpu/examples/cube_shared/cube_frag.hlsl",
-                stage: spirv::Stage::Fragment,
-                entry_point: "fs_main",
+            spirv::Component::Glsl {
+                path: "wgpu/examples/cube-shared/cube.vert",
+                stage: spirv::Stage::Vertex,
+                output_entry_point: "vs_main",
             },
             spirv::Component::Glsl {
-                path: "wgpu/examples/cube_shared/cube_wire.frag",
+                path: "wgpu/examples/cube-shared/cube.frag",
+                stage: spirv::Stage::Fragment,
+                output_entry_point: "fs_main",
+            },
+            spirv::Component::Glsl {
+                path: "wgpu/examples/cube-shared/cube_wire.frag",
                 stage: spirv::Stage::Fragment,
                 output_entry_point: "fs_wire",
             },

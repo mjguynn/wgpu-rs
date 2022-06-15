@@ -1,5 +1,7 @@
 #[path = "../framework.rs"]
 mod framework;
+#[path = "../spirv.rs"]
+mod spirv;
 
 use bytemuck::{Pod, Zeroable};
 use std::{borrow::Cow, f32::consts, future::Future, mem, pin::Pin, task};
@@ -220,9 +222,31 @@ impl framework::Example for Example {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        let spirv_bytes = spirv::build(&[
+            // The binding order is changed, so we can't use the shared shaders.
+            spirv::Component::Glsl {
+                path: "wgpu/examples/cube-rb-rev/cube.vert",
+                stage: spirv::Stage::Vertex,
+                output_entry_point: "vs_main",
+            },
+            spirv::Component::Glsl {
+                path: "wgpu/examples/cube-rb-rev/cube.frag",
+                stage: spirv::Stage::Fragment,
+                output_entry_point: "fs_main",
+            },
+            spirv::Component::Glsl {
+                path: "wgpu/examples/cube-shared/cube_wire.frag",
+                stage: spirv::Stage::Fragment,
+                output_entry_point: "fs_wire",
+            },
+        ])
+        .expect("Failed to compile SPIR-V module");
+
+        let spirv_words = bytemuck::cast_slice(&spirv_bytes);
+
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
+            source: wgpu::ShaderSource::SpirV(Cow::Borrowed(spirv_words)),
         });
 
         let vertex_buffers = [wgpu::VertexBufferLayout {
