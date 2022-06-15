@@ -82,6 +82,7 @@ test = true
 
 [[example]]
 name="shadow"
+required-features = ["spirv"]
 test = true
 
 [[example]]
