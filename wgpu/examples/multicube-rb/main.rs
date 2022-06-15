@@ -115,11 +115,8 @@ struct Example {
 impl Example {
     fn generate_matrix(aspect_ratio: f32, center: glam::Vec3) -> glam::Mat4 {
         let projection = glam::Mat4::perspective_rh(consts::FRAC_PI_4, aspect_ratio, 1.0, 10.0);
-        let view = glam::Mat4::look_at_rh(
-            glam::Vec3::new(1.5f32, -5.0, 3.0),
-            center,
-            glam::Vec3::Z,
-        );
+        let view =
+            glam::Mat4::look_at_rh(glam::Vec3::new(1.5f32, -5.0, 3.0), center, glam::Vec3::Z);
         projection * view
     }
 }
@@ -217,19 +214,21 @@ impl framework::Example for Example {
             glam::Vec3::new(0.0, 0.0, 0.0),
             glam::Vec3::new(1.0, 0.0, 0.0),
             glam::Vec3::new(0.0, 1.0, 0.0),
-            glam::Vec3::new(0.0, 0.0, 1.0)
+            glam::Vec3::new(0.0, 0.0, 1.0),
         ];
-        
+
         let mut uniform_bufs: Vec<wgpu::Buffer> = vec![];
         for center in center_list.clone() {
-            let mx_total = 
+            let mx_total =
                 Self::generate_matrix(config.width as f32 / config.height as f32, center);
             let mx_ref: &[f32; 16] = mx_total.as_ref();
-            uniform_bufs.push(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Uniform Buffer"),
-                contents: bytemuck::cast_slice(mx_ref),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            }));
+            uniform_bufs.push(
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("Uniform Buffer"),
+                    contents: bytemuck::cast_slice(mx_ref),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                }),
+            );
         }
 
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
@@ -341,8 +340,10 @@ impl framework::Example for Example {
         queue: &wgpu::Queue,
     ) {
         for i in 0..self.center_list.len() {
-            let mx_total = Self::generate_matrix(config.width as f32 / config.height as f32,
-                self.center_list[i]);
+            let mx_total = Self::generate_matrix(
+                config.width as f32 / config.height as f32,
+                self.center_list[i],
+            );
             let mx_ref: &[f32; 16] = mx_total.as_ref();
             queue.write_buffer(&self.uniform_bufs[i], 0, bytemuck::cast_slice(mx_ref));
         }
@@ -356,22 +357,26 @@ impl framework::Example for Example {
         spawner: &framework::Spawner,
     ) {
         device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let bind_groups: Vec<_> = self.uniform_bufs.iter().map(|buffer| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &self.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&self.texture_view),
-                    },
-                ],
-                label: None,
+        let bind_groups: Vec<_> = self
+            .uniform_bufs
+            .iter()
+            .map(|buffer| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&self.texture_view),
+                        },
+                    ],
+                    label: None,
+                })
             })
-        }).collect();
+            .collect();
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
