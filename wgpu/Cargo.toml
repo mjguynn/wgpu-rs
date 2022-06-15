@@ -96,6 +96,7 @@ test = true
 
 [[example]]
 name="water"
+required-features = ["spirv"]
 test = true
 
 [features]
