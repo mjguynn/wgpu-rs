@@ -5,9 +5,9 @@ layout( binding = 0 ) uniform Globals {
     vec4 clipping_plane;
 } u_globals;
 
-vec3 light = vec3(150.0, 70.0, 0.0);
-vec3 light_colour = vec3(1.0, 0.98, 0.82);
-float ambient = 0.2;
+const vec3 light = vec3(150.0, 70.0, 0.0);
+const vec3 light_colour = vec3(1.0, 0.98, 0.82);
+const float ambient = 0.2;
 
 layout( location = 0 ) in vec3 position;
 layout( location = 1 ) in vec3 normal;

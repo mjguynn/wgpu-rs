@@ -21,8 +21,8 @@ layout(location = 1) in vec4 world_position;
 
 layout(location = 0) out vec4 out_color;
 
-vec3 c_ambient = vec3(0.05, 0.05, 0.05);
-uint c_max_lights = 10;
+const vec3 c_ambient = vec3(0.05, 0.05, 0.05);
+const uint c_max_lights = 10;
 
 float fetch_shadow(uint light_id, vec4 homogeneous_coords) {
     // compensate for the Y-flip difference between the NDC and texture coordinates
