@@ -12,7 +12,7 @@ use std::process::Command;
 use std::{error, fmt, io};
 
 /// The Vulkan target used with the Vulkan SDK.
-const VULKAN_TARGET: &'static str = "vulkan1.3";
+const VULKAN_TARGET: &'static str = "vulkan1.1";
 
 /// Represents a SPIR-V shader stage.
 /// # WGPU Support
