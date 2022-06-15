@@ -22,6 +22,9 @@ wgpu/red.png
 **/*-actual.png
 **/*-difference.png
 
+# Output from time.py
+results/
+
 # Readme says to check out CTS here
 cts/
 
