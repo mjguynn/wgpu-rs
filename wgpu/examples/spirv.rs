@@ -144,6 +144,7 @@ pub fn compile_from(
     let mut command = Command::new("glslangValidator");
     command
         .arg("--quiet")
+        .arg("--spirv-val")
         .args(&["--target-env", VULKAN_TARGET])
         .args(&["-S", stage.identifier()])
         .args(&[OsStr::new("-o"), output_path.as_os_str()]);
