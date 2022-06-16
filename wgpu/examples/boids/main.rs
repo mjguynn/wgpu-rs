@@ -10,6 +10,8 @@ use wgpu::util::DeviceExt;
 
 #[path = "../framework.rs"]
 mod framework;
+#[path = "../spirv.rs"]
+mod spirv;
 
 // number of boid particles to simulate
 
@@ -53,10 +55,27 @@ impl framework::Example for Example {
             label: None,
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("compute.wgsl"))),
         });
-        let draw_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("draw.wgsl"))),
-        });
+
+        let draw_shader = {
+            let spirv_bytes = spirv::build(&[
+                spirv::Component::Glsl {
+                    path: "wgpu/examples/boids/draw.vert",
+                    stage: spirv::Stage::Vertex,
+                    output_entry_point: "main_vs",
+                },
+                spirv::Component::Glsl {
+                    path: "wgpu/examples/boids/draw.frag",
+                    stage: spirv::Stage::Fragment,
+                    output_entry_point: "main_fs",
+                },
+            ])
+            .expect("Failed to compile SPIR-V module (draw)");
+            let spirv_words = bytemuck::cast_slice(&spirv_bytes);
+            device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+                label: Some("draw"),
+                source: wgpu::ShaderSource::SpirV(Cow::Borrowed(spirv_words)),
+            })
+        };
 
         // buffer for simulation parameters uniform
 

@@ -33,6 +33,7 @@ path = "tests/root.rs"
 
 [[example]]
 name="boids"
+required-features = ["spirv"]
 test = true
 
 [[example]]
