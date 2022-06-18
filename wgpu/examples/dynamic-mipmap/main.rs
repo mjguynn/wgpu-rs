@@ -18,6 +18,56 @@ const MIP_PASS_COUNT: u32 = MIP_LEVEL_COUNT - 1;
 
 type RgbaU8 = [u8; 4];
 
+trait ColorExt {
+    fn from_u8(rgba: &RgbaU8) -> Self;
+    fn to_srgb(&self) -> Self;
+    fn to_linear(&self) -> Self;
+}
+impl ColorExt for wgpu::Color {
+    fn from_u8(rgba: &RgbaU8) -> Self {
+        fn cvt(i: u8) -> f64 {
+            f64::from(i) / f64::from(u8::MAX)
+        }
+        Self {
+            r: cvt(rgba[0]),
+            g: cvt(rgba[1]),
+            b: cvt(rgba[2]),
+            a: cvt(rgba[3]),
+        }
+    }
+    fn to_srgb(&self) -> Self {
+        fn cvt(i: f64) -> f64 {
+            if i <= 0.0031308 {
+                12.92 * i
+            } else {
+                let ie = i.powf(1.0 / 2.4);
+                1.055 * ie - 0.055
+            }
+        }
+        Self {
+            r: cvt(self.r),
+            g: cvt(self.g),
+            b: cvt(self.b),
+            a: self.a,
+        }
+    }
+    fn to_linear(&self) -> Self {
+        fn cvt(i: f64) -> f64 {
+            if i <= 0.04045 {
+                i / 12.92
+            } else {
+                ((i + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        Self {
+            r: cvt(self.r),
+            g: cvt(self.g),
+            b: cvt(self.b),
+            a: self.a,
+        }
+    }
+}
+
 fn sample_color(rng: &mut ThreadRng, color_dist: &Uniform<u8>) -> RgbaU8 {
     color_dist
         .sample_iter(rng)
@@ -386,13 +436,7 @@ impl framework::Example for Example {
             device.poll(wgpu::Maintain::Wait);
             futures::executor::block_on(read_future).unwrap();
             let data = read_slice.get_mapped_range();
-            let clear_color = wgpu::Color {
-                r: (data[0] as f64) / 255.0,
-                g: (data[1] as f64) / 255.0,
-                b: (data[2] as f64) / 255.0,
-                a: 1.0,
-            };
-            clear_color
+            wgpu::Color::from_u8(data[0..4].try_into().unwrap()).to_linear()
         };
 
         let mut encoder =
