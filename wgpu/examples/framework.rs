@@ -1,6 +1,8 @@
 use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Instant};
+use std::io::{stdout, Write};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 use winit::{
     event::{self, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
@@ -128,7 +130,7 @@ async fn setup<E: Example>(title: &str) -> Setup {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let adapter_info = adapter.get_info();
-        println!("Using {} ({:?})", adapter_info.name, adapter_info.backend);
+        eprintln!("Using {} ({:?})", adapter_info.name, adapter_info.backend);
     }
 
     let optional_features = E::optional_features();
@@ -195,79 +197,49 @@ fn start<E: Example>(
         queue,
     }: Setup,
 ) {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() != 1 && args.len() != 3 {
-        println!("Usage of modified example: either no arguments or two arguments");
-        println!("Optional arguments: name_of_file iteration_count");
-        return;
-    }
-    let mut final_frame_count = -1;
-    if args.len() == 3 {
-        let temp =  match args[2].parse::<i32>() {
-            | Ok(i) => i,
-            | _ => -1
-        };
-        if temp < 0 {
-            println!("Second argument must be a positive integer");
-            return;
-        }
-        final_frame_count = temp;
-    }
+    // `Some(n)` if this example should only run for `n` frames, or `None` if it should run forever
+    let max_frame_count = std::env::args().nth(1).and_then(|s| s.parse::<u64>().ok());
+    let mut frame_count = 0;
+
     let spawner = Spawner::new();
     let mut config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format: surface.get_preferred_format(&adapter).unwrap(),
         width: size.width,
         height: size.height,
-        present_mode: wgpu::PresentMode::Mailbox,
+        present_mode: wgpu::PresentMode::Immediate,
     };
     surface.configure(&device, &config);
 
     log::info!("Initializing the example...");
     let mut example = E::init(&config, &adapter, &device, &queue);
 
-    #[cfg(not(target_arch = "wasm32"))]
-    //let mut last_update_inst = Instant::now();
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut last_frame_inst = Instant::now();
-    #[cfg(not(target_arch = "wasm32"))]
-    let (mut frame_count, mut accum_time, mut frame_total) = (0, 0.0, 0);
-    let mut frame_str = "".to_string();
+    // A capacity of 200,000 seems sufficient for timing a 120s runtime with no reallocations.
+    let mut timings = Vec::with_capacity(200_000);
 
     log::info!("Entering render loop...");
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut last_frame_inst = Instant::now();
+
     event_loop.run(move |event, _, control_flow| {
         let _ = (&instance, &adapter); // force ownership by the closure
-        *control_flow = if cfg!(feature = "metal-auto-capture") {
-            ControlFlow::Exit
+        if Some(frame_count) == max_frame_count || cfg!(feature = "metal-auto-capture") {
+            *control_flow = ControlFlow::Exit
         } else {
-            ControlFlow::Poll
+            *control_flow = ControlFlow::Poll
         };
         match event {
-            event::Event::RedrawEventsCleared => {
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    // Clamp to some max framerate to avoid busy-looping too much
-                    // (we might be in wgpu::PresentMode::Mailbox, thus discarding superfluous frames)
-                    //
-                    // winit has window.current_monitor().video_modes() but that is a list of all full screen video modes.
-                    // So without extra dependencies it's a bit tricky to get the max refresh rate we can run the window on.
-                    // Therefore we just go with 60fps - sorry 120hz+ folks!
-                    // let target_frametime = Duration::from_secs_f64(1.0 / 60.0);
-                    // let time_since_last_frame = last_update_inst.elapsed();
-                    // if time_since_last_frame >= target_frametime {
-                        window.request_redraw();
-                        //last_update_inst = Instant::now();
-                    // } else {
-                    //     *control_flow = ControlFlow::WaitUntil(
-                    //         Instant::now() + target_frametime - time_since_last_frame,
-                    //     );
-                    // }
-
-                    spawner.run_until_stalled();
+            #[cfg(not(target_arch = "wasm32"))]
+            event::Event::LoopDestroyed => {
+                let mut output = stdout().lock();
+                for timing in &timings {
+                    write!(output, "{}\n", timing).unwrap();
                 }
-
-                #[cfg(target_arch = "wasm32")]
+            }
+            event::Event::RedrawEventsCleared => {
                 window.request_redraw();
+                #[cfg(not(target_arch = "wasm32"))]
+                spawner.run_until_stalled();
             }
             event::Event::WindowEvent {
                 event:
@@ -315,26 +287,11 @@ fn start<E: Example>(
             },
             event::Event::RedrawRequested(_) => {
                 #[cfg(not(target_arch = "wasm32"))]
-                {
-                    accum_time += last_frame_inst.elapsed().as_secs_f32();
-                    let current_frame = Instant::now();
-                    println!(
-                        "{}",
-                        (current_frame - last_frame_inst).as_nanos()
-                    );
-                    if frame_count == 100 {
-                        frame_str += &((accum_time * 1000.0 / frame_count as f32).to_string() + &"\n".to_string());
-                        accum_time = 0.0;
-                        frame_count = 0;
-                        frame_total += 1;
-                        if final_frame_count > 0 && frame_total >= final_frame_count {
-                            std::fs::write(&args[1], &frame_str).
-                                expect("Unable to write file");
-                            std::process::exit(0);
-                        }
-                    }
-                    frame_count += 1;
-                    last_frame_inst = Instant::now();
+                if max_frame_count.is_some() {
+                    let now = Instant::now();
+                    let elapsed = now.duration_since(last_frame_inst).as_nanos();
+                    timings.push(elapsed);
+                    last_frame_inst = now;
                 }
 
                 let frame = match surface.get_current_texture() {
@@ -353,6 +310,8 @@ fn start<E: Example>(
                 example.render(&view, &device, &queue, &spawner);
 
                 frame.present();
+
+                frame_count += 1;
             }
             _ => {}
         }
