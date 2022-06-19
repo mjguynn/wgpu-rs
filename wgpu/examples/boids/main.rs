@@ -10,6 +10,8 @@ use wgpu::util::DeviceExt;
 
 #[path = "../framework.rs"]
 mod framework;
+#[path = "../spirv.rs"]
+mod spirv;
 
 // number of boid particles to simulate
 
@@ -49,14 +51,40 @@ impl framework::Example for Example {
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) -> Self {
-        let compute_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("compute.wgsl"))),
-        });
-        let draw_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("draw.wgsl"))),
-        });
+        let compute_shader = {
+            let spirv_bytes = spirv::build(&[spirv::Component::Glsl {
+                path: "wgpu/examples/boids/compute.comp",
+                stage: spirv::Stage::Compute,
+                output_entry_point: "main",
+            }])
+            .expect("Failed to compile SPIR-V module (compute)");
+            let spirv_words = bytemuck::cast_slice(&spirv_bytes);
+            device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+                label: Some("compute"),
+                source: wgpu::ShaderSource::SpirV(Cow::Borrowed(spirv_words)),
+            })
+        };
+
+        let draw_shader = {
+            let spirv_bytes = spirv::build(&[
+                spirv::Component::Glsl {
+                    path: "wgpu/examples/boids/draw.vert",
+                    stage: spirv::Stage::Vertex,
+                    output_entry_point: "main_vs",
+                },
+                spirv::Component::Glsl {
+                    path: "wgpu/examples/boids/draw.frag",
+                    stage: spirv::Stage::Fragment,
+                    output_entry_point: "main_fs",
+                },
+            ])
+            .expect("Failed to compile SPIR-V module (draw)");
+            let spirv_words = bytemuck::cast_slice(&spirv_bytes);
+            device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+                label: Some("draw"),
+                source: wgpu::ShaderSource::SpirV(Cow::Borrowed(spirv_words)),
+            })
+        };
 
         // buffer for simulation parameters uniform
 
@@ -97,7 +125,11 @@ impl framework::Example for Example {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            // read_only should be true, but I'm 99% sure Naga is bugged.
+                            // particlesSrc has the readonly GLSL attribute, and there's
+                            // a NonWritable decorator in the generated SPIR-V, yet Naga
+                            // claims it's Storage { access: LOAD | STORE }
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
                             has_dynamic_offset: false,
                             min_binding_size: wgpu::BufferSize::new((NUM_PARTICLES * 16) as _),
                         },

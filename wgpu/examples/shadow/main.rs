@@ -2,6 +2,8 @@ use std::{borrow::Cow, f32::consts, iter, mem, num::NonZeroU32, ops::Range, rc::
 
 #[path = "../framework.rs"]
 mod framework;
+#[path = "../spirv.rs"]
+mod spirv;
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -454,9 +456,35 @@ impl framework::Example for Example {
             attributes: &vertex_attr,
         };
 
+        let spirv_bytes = spirv::build(&[
+            spirv::Component::Glsl {
+                path: "wgpu/examples/shadow/shadow_main.vert",
+                stage: spirv::Stage::Vertex,
+                output_entry_point: "vs_main",
+            },
+            spirv::Component::Glsl {
+                path: "wgpu/examples/shadow/shadow_bake.vert",
+                stage: spirv::Stage::Vertex,
+                output_entry_point: "vs_bake",
+            },
+            spirv::Component::Glsl {
+                path: "wgpu/examples/shadow/shadow_main.frag",
+                stage: spirv::Stage::Fragment,
+                output_entry_point: "fs_main",
+            },
+            spirv::Component::Glsl {
+                path: "wgpu/examples/shadow/shadow_main_without_storage.frag",
+                stage: spirv::Stage::Fragment,
+                output_entry_point: "fs_main_without_storage",
+            },
+        ])
+        .expect("Failed to compile SPIR-V module");
+
+        let spirv_words = bytemuck::cast_slice(&spirv_bytes);
+
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: None,
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("shader.wgsl"))),
+            source: wgpu::ShaderSource::SpirV(Cow::Borrowed(spirv_words)),
         });
 
         let shadow_pass = {

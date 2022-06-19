@@ -1,5 +1,7 @@
 #[path = "../framework.rs"]
 mod framework;
+#[path = "../spirv.rs"]
+mod spirv;
 
 mod point_gen;
 
@@ -490,14 +492,47 @@ impl framework::Example for Example {
         });
 
         // Upload/compile them to GPU code.
-        let terrain_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: Some("terrain"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("terrain.wgsl"))),
-        });
-        let water_module = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
-            label: Some("water"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!("water.wgsl"))),
-        });
+        let terrain_module = {
+            let spirv_bytes = spirv::build(&[
+                spirv::Component::Glsl {
+                    path: "wgpu/examples/water/terrain.vert",
+                    stage: spirv::Stage::Vertex,
+                    output_entry_point: "vs_main",
+                },
+                spirv::Component::Glsl {
+                    path: "wgpu/examples/water/terrain.frag",
+                    stage: spirv::Stage::Fragment,
+                    output_entry_point: "fs_main",
+                },
+            ])
+            .expect("Failed to compile SPIR-V module (terrain)");
+            let spirv_words = bytemuck::cast_slice(&spirv_bytes);
+            device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+                label: Some("terrain"),
+                source: wgpu::ShaderSource::SpirV(Cow::Borrowed(spirv_words)),
+            })
+        };
+
+        let water_module = {
+            let spirv_bytes = spirv::build(&[
+                spirv::Component::Glsl {
+                    path: "wgpu/examples/water/water.vert",
+                    stage: spirv::Stage::Vertex,
+                    output_entry_point: "vs_main",
+                },
+                spirv::Component::Glsl {
+                    path: "wgpu/examples/water/water.frag",
+                    stage: spirv::Stage::Fragment,
+                    output_entry_point: "fs_main",
+                },
+            ])
+            .expect("Failed to compile SPIR-V module (water)");
+            let spirv_words = bytemuck::cast_slice(&spirv_bytes);
+            device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+                label: Some("water"),
+                source: wgpu::ShaderSource::SpirV(Cow::Borrowed(spirv_words)),
+            })
+        };
 
         // Create the render pipelines. These describe how the data will flow through the GPU, and what
         // constraints and modifiers it will have.

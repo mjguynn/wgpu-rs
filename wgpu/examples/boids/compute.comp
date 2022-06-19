@@ -1,0 +1,96 @@
+#version 450
+
+struct Particle {
+    vec2 pos;
+    vec2 vel;
+};
+
+layout( binding = 0 ) uniform SimParams {
+    float deltaT;
+    float rule1Distance;
+    float rule2Distance;
+    float rule3Distance;
+    float rule1Scale;
+    float rule2Scale;
+    float rule3Scale;
+} params;
+layout( binding = 1 ) readonly buffer ParticleSource {
+    Particle particlesSrc[];
+};
+layout( binding = 2 ) buffer ParticleDestination {
+    Particle particlesDst[];
+};
+
+// I believe this is equivalent to @workgroup_size(64)
+layout( local_size_x = 64 ) in;
+
+void main() {
+    uint total = particlesSrc.length();
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= total) {
+        return;
+    }
+
+    vec2 vPos = particlesSrc[index].pos;
+    vec2 vVel = particlesSrc[index].vel;
+
+    vec2 cMass = vec2(0.0, 0.0);
+    vec2 cVel = vec2(0.0, 0.0);
+    vec2 colVel = vec2(0.0, 0.0);
+    int cMassCount = 0;
+    int cVelCount = 0;
+
+    uint i = 0;
+    for(uint i = 0; i < total; i++){
+        if (i == index) {
+            continue;
+        }
+        vec2 pos = particlesSrc[i].pos;
+        vec2 vel = particlesSrc[i].vel;
+
+        if (distance(pos, vPos) < params.rule1Distance) {
+            cMass += pos;
+            cMassCount += 1;
+        }
+        if (distance(pos, vPos) < params.rule2Distance) {
+            colVel -= pos - vPos;
+        }
+        if (distance(pos, vPos) < params.rule3Distance) {
+            cVel += vel;
+            cVelCount += 1;
+        }
+    }
+    if (cMassCount > 0) {
+        cMass = cMass * (1.0 / float(cMassCount)) - vPos;
+    }
+    if (cVelCount > 0) {
+        cVel *= 1.0 / float(cVelCount);
+    }
+
+    vVel = vVel + (cMass * params.rule1Scale) +
+        (colVel * params.rule2Scale) +
+        (cVel * params.rule3Scale);
+
+    // clamp velocity for a more pleasing simulation
+    vVel = normalize(vVel) * clamp(length(vVel), 0.0, 0.1);
+
+    // kinematic update
+    vPos += vVel * params.deltaT;
+
+    // Wrap around boundary
+    if (vPos.x < -1.0) {
+        vPos.x = 1.0;
+    }
+    if (vPos.x > 1.0) {
+        vPos.x = -1.0;
+    }
+    if (vPos.y < -1.0) {
+        vPos.y = 1.0;
+    }
+    if (vPos.y > 1.0) {
+        vPos.y = -1.0;
+    }
+
+    // Write back
+    particlesDst[index] = Particle(vPos, vVel);
+}
