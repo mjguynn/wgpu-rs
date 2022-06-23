@@ -15,7 +15,7 @@ def help():
 
 # Get the result of a single example
 def process_example(example : str, frame_count : int, file : "typing.IO"):
-  output = subprocess.run(f"cargo run --release --quiet --example {example} -- {frame_count}", capture_output=True, encoding="utf8")
+  output = subprocess.run(f"cargo run --release --features spirv --quiet --example {example} -- {frame_count}", capture_output=True, encoding="utf8")
   if output.returncode != 0:
     print(f"ERROR: {example} returned code {output.returncode}")
     sys.exit(output.returncode)
