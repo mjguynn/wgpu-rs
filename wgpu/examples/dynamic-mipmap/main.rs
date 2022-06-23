@@ -434,7 +434,7 @@ impl framework::Example for Example {
             let read_slice = read_buf.slice(..);
             let read_future = read_slice.map_async(wgpu::MapMode::Read);
             device.poll(wgpu::Maintain::Wait);
-            futures::executor::block_on(read_future).unwrap();
+            pollster::block_on(read_future).unwrap();
             let data = read_slice.get_mapped_range();
             wgpu::Color::from_u8(data[0..4].try_into().unwrap()).to_linear()
         };
